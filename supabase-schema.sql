@@ -24,6 +24,7 @@ create table if not exists public.students (
   receipt_checked boolean not null default false,
   receipt_date date,
   receipt_memo text not null default '',
+  receipt_items jsonb not null default '[]'::jsonb,
   studio_notice text not null default '',
   teacher_memo text not null default '',
   order_index integer not null default 0,

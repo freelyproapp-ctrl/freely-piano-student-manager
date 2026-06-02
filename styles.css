@@ -294,7 +294,7 @@ textarea:focus {
 
 .stats {
   display: grid;
-  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 12px;
 }
 
@@ -461,6 +461,64 @@ textarea:focus {
   min-height: 20px;
 }
 
+.receipt-modal {
+  width: min(1120px, 100%);
+}
+
+.receipt-list {
+  display: grid;
+  gap: 10px;
+}
+
+.receipt-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(145px, 0.7fr) minmax(180px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbf8;
+  padding: 12px;
+}
+
+.receipt-row.paid {
+  background: #f3fbf5;
+}
+
+.receipt-row.unpaid {
+  background: #fffdf6;
+}
+
+.receipt-row strong,
+.receipt-row span,
+.receipt-row label span {
+  display: block;
+}
+
+.receipt-row strong {
+  font-size: 15px;
+  margin-bottom: 4px;
+}
+
+.receipt-row span,
+.receipt-row label span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.receipt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.add-receipt-form {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
 .toast {
   position: fixed;
   right: 18px;
@@ -500,7 +558,8 @@ textarea:focus {
   }
 
   .form-grid,
-  .course-row {
+  .course-row,
+  .receipt-row {
     grid-template-columns: 1fr;
   }
 

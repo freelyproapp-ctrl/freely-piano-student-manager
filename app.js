@@ -1,6 +1,13 @@
 const STORAGE_KEY = "pianoStudioManager.v3";
 const SESSION_KEY = "pianoStudioManager.session";
 const DEFAULT_STUDIO_NAME = "freelyピアノ教室";
+const RECEIPT_TYPES = {
+  monthly: "月謝",
+  facility: "施設費",
+  live: "ライブ参加費",
+  recital: "発表会費",
+  other: "その他",
+};
 
 const COURSE_PRESETS = [
   { id: "monthly-beyer", name: "対面月謝 バイエル程度", fee: 6600 },
@@ -45,6 +52,7 @@ let supabase = null;
 let authUser = null;
 let searchTerm = "";
 let editingStudentId = null;
+let receiptStudentId = null;
 let isLoading = true;
 let loadingMessage = "起動しています";
 let syncMessage = cloudEnabled ? "クラウド保存を準備中です" : "デモ保存中です";
@@ -57,8 +65,32 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function monthKey(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function addMonths(date, amount) {
+  const next = new Date(date);
+  next.setMonth(next.getMonth() + amount);
+  return next;
+}
+
+function lastTwelveMonths() {
+  const now = new Date();
+  return Array.from({ length: 12 }, (_, index) => monthKey(addMonths(now, -index)));
+}
+
+function formatMonth(key) {
+  const [year, month] = key.split("-");
+  return `${year}年${Number(month)}月`;
+}
+
 function yen(value) {
   return Number(value || 0).toLocaleString("ja-JP", { style: "currency", currency: "JPY" });
+}
+
+function isVisitCourse(courseId, courses = COURSE_PRESETS) {
+  return courses.find((course) => course.id === courseId)?.name.includes("出張");
 }
 
 function createDefaultState() {
@@ -76,6 +108,13 @@ function createDefaultState() {
       receiptChecked: index % 3 === 0,
       receiptDate: index % 3 === 0 ? today() : "",
       receiptMemo: "",
+      receiptItems: createReceiptItems({
+        courseId,
+        fee: course.fee,
+        receiptChecked: index % 3 === 0,
+        receiptDate: index % 3 === 0 ? today() : "",
+        receiptMemo: "",
+      }),
       studioNotice: "次回までに宿題の曲を片手ずつ確認してください。",
       teacherMemo: "",
       updatedAt: new Date().toISOString(),
@@ -117,12 +156,162 @@ function normalizeState(saved) {
     receiptChecked: Boolean(student.receiptChecked),
     receiptDate: student.receiptDate || "",
     receiptMemo: student.receiptMemo || "",
+    receiptItems: normalizeReceiptItems(student),
     studioNotice: student.studioNotice || "",
     teacherMemo: student.teacherMemo ?? student.parentMemo ?? "",
     updatedAt: student.updatedAt || new Date().toISOString(),
   }));
   localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   return next;
+}
+
+function createReceiptItems(student) {
+  const currentYear = new Date().getFullYear();
+  const months = lastTwelveMonths();
+  const currentMonth = monthKey();
+  const monthlyItems = months.map((month) => ({
+    id: uid("receipt"),
+    type: "monthly",
+    label: "月謝",
+    targetMonth: month,
+    amount: Number(student.fee || 0),
+    receiptDate: student.receiptChecked && month === currentMonth ? student.receiptDate || today() : "",
+    memo: student.receiptChecked && month === currentMonth ? student.receiptMemo || "" : "",
+    required: true,
+  }));
+
+  const annualItems = [];
+  if (!isVisitCourse(student.courseId)) {
+    annualItems.push({
+      id: uid("receipt"),
+      type: "facility",
+      label: "施設費",
+      targetMonth: `${currentYear}-04`,
+      amount: 1200,
+      receiptDate: today(),
+      memo: `${currentYear}年度分`,
+      required: true,
+    });
+  }
+
+  annualItems.push(
+    {
+      id: uid("receipt"),
+      type: "live",
+      label: "ライブ参加費",
+      targetMonth: `${currentYear}-04`,
+      amount: 0,
+      receiptDate: today(),
+      memo: `${currentYear}年度分・金額は必要に応じて編集`,
+      required: true,
+    },
+    {
+      id: uid("receipt"),
+      type: "recital",
+      label: "発表会費",
+      targetMonth: `${currentYear}-09`,
+      amount: 0,
+      receiptDate: "",
+      memo: `${currentYear}年度分・これから徴収`,
+      required: true,
+    },
+  );
+
+  return [...monthlyItems, ...annualItems];
+}
+
+function normalizeReceiptItems(student) {
+  const existing = Array.isArray(student.receiptItems) ? student.receiptItems : [];
+  const normalized = existing.map((item) => ({
+    id: item.id || uid("receipt"),
+    type: item.type || "other",
+    label: item.label || RECEIPT_TYPES[item.type] || "その他",
+    targetMonth: item.targetMonth || monthKey(),
+    amount: Number(item.amount || 0),
+    receiptDate: item.receiptDate || "",
+    memo: item.memo || "",
+    required: item.required !== false,
+  }));
+
+  const monthSet = new Set(normalized.filter((item) => item.type === "monthly").map((item) => item.targetMonth));
+  const missingMonthly = lastTwelveMonths()
+    .filter((month) => !monthSet.has(month))
+    .map((month) => ({
+      id: uid("receipt"),
+      type: "monthly",
+      label: "月謝",
+      targetMonth: month,
+      amount: Number(student.fee || 0),
+      receiptDate: student.receiptChecked && month === monthKey() ? student.receiptDate || today() : "",
+      memo: student.receiptChecked && month === monthKey() ? student.receiptMemo || "" : "",
+      required: true,
+    }));
+
+  const hasFacility = normalized.some((item) => item.type === "facility");
+  const hasLive = normalized.some((item) => item.type === "live");
+  const hasRecital = normalized.some((item) => item.type === "recital");
+  const annual = [];
+  const currentYear = new Date().getFullYear();
+
+  if (!hasFacility && !isVisitCourse(student.courseId)) {
+    annual.push({
+      id: uid("receipt"),
+      type: "facility",
+      label: "施設費",
+      targetMonth: `${currentYear}-04`,
+      amount: 1200,
+      receiptDate: today(),
+      memo: `${currentYear}年度分`,
+      required: true,
+    });
+  }
+  if (!hasLive) {
+    annual.push({
+      id: uid("receipt"),
+      type: "live",
+      label: "ライブ参加費",
+      targetMonth: `${currentYear}-04`,
+      amount: 0,
+      receiptDate: today(),
+      memo: `${currentYear}年度分・不参加の場合は削除`,
+      required: true,
+    });
+  }
+  if (!hasRecital) {
+    annual.push({
+      id: uid("receipt"),
+      type: "recital",
+      label: "発表会費",
+      targetMonth: `${currentYear}-09`,
+      amount: 0,
+      receiptDate: "",
+      memo: `${currentYear}年度分・これから徴収`,
+      required: true,
+    });
+  }
+
+  return sortReceiptItems([...normalized, ...missingMonthly, ...annual]);
+}
+
+function sortReceiptItems(items) {
+  const typeOrder = { monthly: 1, facility: 2, live: 3, recital: 4, other: 5 };
+  return [...items].sort((a, b) => {
+    if (a.targetMonth !== b.targetMonth) return b.targetMonth.localeCompare(a.targetMonth);
+    return (typeOrder[a.type] || 9) - (typeOrder[b.type] || 9);
+  });
+}
+
+function currentMonthlyReceipt(student) {
+  return student.receiptItems.find((item) => item.type === "monthly" && item.targetMonth === monthKey());
+}
+
+function receiptSummary(student) {
+  const items = student.receiptItems || [];
+  const requiredItems = items.filter((item) => item.required !== false);
+  const paidItems = requiredItems.filter((item) => item.receiptDate);
+  const unpaidItems = requiredItems.filter((item) => !item.receiptDate);
+  const latest = [...paidItems].sort((a, b) => b.receiptDate.localeCompare(a.receiptDate))[0];
+  return { paidItems, unpaidItems, latest };
 }
 
 function loadLocalSession() {
@@ -210,6 +399,7 @@ function toDbStudent(student, orderIndex) {
     receipt_checked: Boolean(student.receiptChecked),
     receipt_date: student.receiptDate || null,
     receipt_memo: student.receiptMemo || "",
+    receipt_items: student.receiptItems || [],
     studio_notice: student.studioNotice || "",
     teacher_memo: student.teacherMemo || "",
     order_index: orderIndex,
@@ -237,6 +427,15 @@ function fromDbStudent(student) {
     receiptChecked: Boolean(student.receipt_checked),
     receiptDate: student.receipt_date || "",
     receiptMemo: student.receipt_memo || "",
+    receiptItems: normalizeReceiptItems({
+      ...student,
+      courseId: student.course_id,
+      fee: student.fee,
+      receiptChecked: student.receipt_checked,
+      receiptDate: student.receipt_date || "",
+      receiptMemo: student.receipt_memo || "",
+      receiptItems: student.receipt_items || [],
+    }),
     studioNotice: student.studio_notice || "",
     teacherMemo: student.teacher_memo || "",
     updatedAt: student.updated_at || new Date().toISOString(),
@@ -395,9 +594,10 @@ function loginTemplate() {
 }
 
 function teacherTemplate() {
-  const paid = state.students.filter((student) => student.receiptChecked).length;
+  const paid = state.students.filter((student) => currentMonthlyReceipt(student)?.receiptDate).length;
   const unpaid = state.students.length - paid;
   const monthly = state.students.reduce((sum, student) => sum + Number(student.fee || 0), 0);
+  const totalUnpaidItems = state.students.reduce((sum, student) => sum + receiptSummary(student).unpaidItems.length, 0);
   const filtered = state.students.filter((student) => {
     const haystack = `${student.name} ${student.grade} ${student.lessonDay} ${getCourse(student.courseId).name}`.toLowerCase();
     return haystack.includes(searchTerm.toLowerCase());
@@ -421,9 +621,10 @@ function teacherTemplate() {
         </form>
         <div class="stats">
           <div class="stat"><span class="subtle">生徒数</span><strong>${state.students.length}</strong></div>
-          <div class="stat"><span class="subtle">領収済み</span><strong>${paid}</strong></div>
-          <div class="stat"><span class="subtle">未確認</span><strong>${unpaid}</strong></div>
+          <div class="stat"><span class="subtle">今月月謝 領収済み</span><strong>${paid}</strong></div>
+          <div class="stat"><span class="subtle">今月月謝 未確認</span><strong>${unpaid}</strong></div>
           <div class="stat"><span class="subtle">月額合計</span><strong>${yen(monthly)}</strong></div>
+          <div class="stat"><span class="subtle">未領収項目</span><strong>${totalUnpaidItems}</strong></div>
         </div>
         <section class="panel">
           <div class="panel-head">
@@ -438,6 +639,7 @@ function teacherTemplate() {
         </section>
       </section>
       ${studentModalTemplate()}
+      ${receiptModalTemplate()}
       ${courseModalTemplate()}
     `,
     `<button class="btn secondary" id="logout">ログアウト</button>`,
@@ -446,6 +648,8 @@ function teacherTemplate() {
 
 function studentCardTemplate(student) {
   const course = getCourse(student.courseId);
+  const currentReceipt = currentMonthlyReceipt(student);
+  const summary = receiptSummary(student);
   return `
     <article class="student-card" data-student-card="${student.id}">
       <div class="card-head">
@@ -453,15 +657,19 @@ function studentCardTemplate(student) {
           <div class="card-name">${escapeHtml(student.name)}</div>
           <p class="subtle">${escapeHtml(student.grade)} / ${escapeHtml(course.name)}</p>
         </div>
-        <span class="badge ${student.receiptChecked ? "" : "warn"}">${student.receiptChecked ? "領収済み" : "未確認"}</span>
+        <span class="badge ${currentReceipt?.receiptDate ? "" : "warn"}">${currentReceipt?.receiptDate ? "今月領収済み" : "今月未確認"}</span>
       </div>
       <div class="meta">
         <div><span>レッスン</span>${escapeHtml(student.lessonDay)}曜 ${escapeHtml(student.startTime)}</div>
         <div><span>レッスン費</span>${yen(student.fee)}</div>
-        <div><span>領収日</span>${student.receiptDate || "未記入"}</div>
+        <div><span>今月月謝</span>${currentReceipt?.receiptDate ? currentReceipt.receiptDate : "未領収"}</div>
+        <div><span>直近領収</span>${summary.latest ? `${summary.latest.receiptDate} ${escapeHtml(summary.latest.label)}` : "なし"}</div>
+        <div><span>未領収項目</span>${summary.unpaidItems.length}件</div>
         <div><span>講師メモ</span>${escapeHtml(student.teacherMemo || "なし")}</div>
       </div>
       <div class="card-actions">
+        <button class="btn" data-quick-receipt="${student.id}">${currentReceipt?.receiptDate ? "領収日更新" : "今月月謝を領収"}</button>
+        <button class="btn secondary" data-receipts="${student.id}">入金履歴</button>
         <button class="btn secondary" data-edit="${student.id}">編集</button>
         <button class="btn danger" data-delete="${student.id}">削除</button>
       </div>
@@ -490,14 +698,77 @@ function studentModalTemplate() {
             <label class="field"><span>レッスン費</span><input name="fee" type="number" min="0" step="100" value="${student.fee}" /></label>
             <label class="field"><span>曜日</span><select name="lessonDay">${["月", "火", "水", "木", "金", "土", "日"].map((day) => `<option ${day === student.lessonDay ? "selected" : ""}>${day}</option>`).join("")}</select></label>
             <label class="field"><span>開始時間</span><input name="startTime" type="time" value="${escapeHtml(student.startTime)}" /></label>
-            <label class="check-row full"><input name="receiptChecked" type="checkbox" ${student.receiptChecked ? "checked" : ""} /><span class="check-label">レッスン費をお預かり済み</span></label>
-            <label class="field"><span>領収日</span><input name="receiptDate" type="date" value="${escapeHtml(student.receiptDate)}" /></label>
-            <label class="field"><span>領収メモ</span><input name="receiptMemo" value="${escapeHtml(student.receiptMemo)}" /></label>
             <label class="field full"><span>お教室からの案内事項</span><textarea name="studioNotice">${escapeHtml(student.studioNotice)}</textarea></label>
             <label class="field full"><span>講師メモ</span><textarea name="teacherMemo">${escapeHtml(student.teacherMemo || "")}</textarea></label>
           </div>
           <button class="btn" type="submit">保存</button>
         </form>
+      </div>
+    </div>
+  `;
+}
+
+function receiptModalTemplate() {
+  const student = receiptStudentId ? getStudent(receiptStudentId) : null;
+  if (!student) {
+    return `<div class="overlay" id="receiptOverlay" aria-hidden="true"></div>`;
+  }
+  const rows = sortReceiptItems(student.receiptItems || []);
+  return `
+    <div class="overlay" id="receiptOverlay" aria-hidden="true">
+      <div class="modal receipt-modal" role="dialog" aria-modal="true">
+        <div class="modal-head">
+          <div>
+            <h2>${escapeHtml(student.name)}さんの入金履歴</h2>
+            <p class="subtle">過去12か月の月謝と、年1回の徴収項目を確認できます</p>
+          </div>
+          <button class="btn icon secondary" data-close-modal type="button">×</button>
+        </div>
+        <div class="receipt-list">
+          ${rows.map((item) => receiptRowTemplate(item)).join("")}
+        </div>
+        <form class="form add-receipt-form" id="addReceiptForm">
+          <h3>その他の入金項目を追加</h3>
+          <div class="form-grid">
+            <label class="field">
+              <span>種類</span>
+              <select name="type">
+                ${Object.entries(RECEIPT_TYPES).map(([value, label]) => `<option value="${value}" ${value === "other" ? "selected" : ""}>${label}</option>`).join("")}
+              </select>
+            </label>
+            <label class="field"><span>対象月</span><input name="targetMonth" type="month" value="${monthKey()}" /></label>
+            <label class="field"><span>項目名</span><input name="label" value="その他" /></label>
+            <label class="field"><span>金額</span><input name="amount" type="number" min="0" step="100" value="0" /></label>
+            <label class="field full"><span>メモ</span><input name="memo" placeholder="必要に応じてメモ" /></label>
+          </div>
+          <button class="btn secondary" type="submit">項目を追加</button>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+function receiptRowTemplate(item) {
+  const paid = Boolean(item.receiptDate);
+  return `
+    <div class="receipt-row ${paid ? "paid" : "unpaid"}" data-receipt-row="${item.id}">
+      <div>
+        <strong>${escapeHtml(item.label || RECEIPT_TYPES[item.type] || "その他")}</strong>
+        <span>${formatMonth(item.targetMonth)} / ${yen(item.amount)}</span>
+      </div>
+      <label>
+        <span>領収日</span>
+        <input data-receipt-date="${item.id}" type="date" value="${escapeHtml(item.receiptDate || "")}" />
+      </label>
+      <label>
+        <span>メモ</span>
+        <input data-receipt-memo="${item.id}" value="${escapeHtml(item.memo || "")}" />
+      </label>
+      <div class="receipt-actions">
+        <button class="btn ${paid ? "secondary" : ""}" type="button" data-mark-receipt="${item.id}">${paid ? "日付更新" : "領収"}</button>
+        <button class="btn secondary" type="button" data-save-receipt="${item.id}">保存</button>
+        <button class="btn danger" type="button" data-clear-receipt="${item.id}">取消</button>
+        ${item.type !== "monthly" ? `<button class="btn danger" type="button" data-delete-receipt="${item.id}">削除</button>` : ""}
       </div>
     </div>
   `;
@@ -551,6 +822,7 @@ function emptyStudent() {
     receiptChecked: false,
     receiptDate: "",
     receiptMemo: "",
+    receiptItems: createReceiptItems({ courseId: course.id, fee: course.fee }),
     studioNotice: "",
     teacherMemo: "",
   };
@@ -611,6 +883,25 @@ function bindTeacher() {
     button.addEventListener("click", () => openStudentModal(button.dataset.edit));
   });
 
+  document.querySelectorAll("[data-receipts]").forEach((button) => {
+    button.addEventListener("click", () => openReceiptModal(button.dataset.receipts));
+  });
+
+  document.querySelectorAll("[data-quick-receipt]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const student = getStudent(button.dataset.quickReceipt);
+      const receipt = currentMonthlyReceipt(student);
+      if (!receipt) return;
+      receipt.receiptDate = today();
+      receipt.memo = receipt.memo || "月謝を領収";
+      student.receiptChecked = true;
+      student.receiptDate = receipt.receiptDate;
+      student.receiptMemo = receipt.memo;
+      student.updatedAt = new Date().toISOString();
+      await saveState("今月月謝を領収しました");
+    });
+  });
+
   document.querySelectorAll("[data-delete]").forEach((button) => {
     button.addEventListener("click", async () => {
       const student = getStudent(button.dataset.delete);
@@ -621,6 +912,7 @@ function bindTeacher() {
   });
 
   bindStudentModal();
+  bindReceiptModal();
   bindCourseModal();
 }
 
@@ -635,6 +927,90 @@ function openStudentModal(id) {
   render();
   document.querySelector("#studentOverlay").classList.add("show");
   document.querySelector("#studentOverlay").setAttribute("aria-hidden", "false");
+}
+
+function openReceiptModal(id) {
+  receiptStudentId = id;
+  render();
+  document.querySelector("#receiptOverlay").classList.add("show");
+  document.querySelector("#receiptOverlay").setAttribute("aria-hidden", "false");
+}
+
+function bindReceiptModal() {
+  const overlay = document.querySelector("#receiptOverlay");
+  if (!overlay || !receiptStudentId) return;
+  overlay.querySelectorAll("[data-close-modal]").forEach((button) => {
+    button.addEventListener("click", closeModals);
+  });
+
+  overlay.querySelectorAll("[data-mark-receipt]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await updateReceiptItem(button.dataset.markReceipt, { receiptDate: today() }, "領収しました");
+    });
+  });
+
+  overlay.querySelectorAll("[data-save-receipt]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const id = button.dataset.saveReceipt;
+      await updateReceiptItem(
+        id,
+        {
+          receiptDate: overlay.querySelector(`[data-receipt-date="${id}"]`).value,
+          memo: overlay.querySelector(`[data-receipt-memo="${id}"]`).value.trim(),
+        },
+        "入金履歴を保存しました",
+      );
+    });
+  });
+
+  overlay.querySelectorAll("[data-clear-receipt]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await updateReceiptItem(button.dataset.clearReceipt, { receiptDate: "" }, "領収を取り消しました");
+    });
+  });
+
+  overlay.querySelectorAll("[data-delete-receipt]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const student = getStudent(receiptStudentId);
+      student.receiptItems = student.receiptItems.filter((item) => item.id !== button.dataset.deleteReceipt);
+      student.updatedAt = new Date().toISOString();
+      await saveState("入金項目を削除しました");
+      setTimeout(() => openReceiptModal(student.id), 0);
+    });
+  });
+
+  overlay.querySelector("#addReceiptForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const student = getStudent(receiptStudentId);
+    const data = new FormData(event.currentTarget);
+    const type = data.get("type");
+    student.receiptItems.push({
+      id: uid("receipt"),
+      type,
+      label: data.get("label").trim() || RECEIPT_TYPES[type] || "その他",
+      targetMonth: data.get("targetMonth") || monthKey(),
+      amount: Number(data.get("amount") || 0),
+      receiptDate: "",
+      memo: data.get("memo").trim(),
+      required: true,
+    });
+    student.receiptItems = sortReceiptItems(student.receiptItems);
+    student.updatedAt = new Date().toISOString();
+    await saveState("入金項目を追加しました");
+    setTimeout(() => openReceiptModal(student.id), 0);
+  });
+}
+
+async function updateReceiptItem(receiptId, updates, message) {
+  const student = getStudent(receiptStudentId);
+  student.receiptItems = student.receiptItems.map((item) => (item.id === receiptId ? { ...item, ...updates } : item));
+  const current = currentMonthlyReceipt(student);
+  student.receiptChecked = Boolean(current?.receiptDate);
+  student.receiptDate = current?.receiptDate || "";
+  student.receiptMemo = current?.memo || "";
+  student.updatedAt = new Date().toISOString();
+  await saveState(message);
+  setTimeout(() => openReceiptModal(student.id), 0);
 }
 
 function bindStudentModal() {
@@ -660,15 +1036,20 @@ function bindStudentModal() {
       lessonDay: data.get("lessonDay"),
       startTime: data.get("startTime"),
       fee: Number(data.get("fee")),
-      receiptChecked: data.get("receiptChecked") === "on",
-      receiptDate: data.get("receiptDate"),
-      receiptMemo: data.get("receiptMemo").trim(),
+      receiptChecked: false,
+      receiptDate: "",
+      receiptMemo: "",
+      receiptItems: editingStudentId
+        ? normalizeReceiptItems({
+            ...getStudent(editingStudentId),
+            courseId: data.get("courseId"),
+            fee: Number(data.get("fee")),
+          }).map((item) => (item.type === "monthly" ? { ...item, amount: Number(data.get("fee")) } : item))
+        : createReceiptItems({ courseId: data.get("courseId"), fee: Number(data.get("fee")) }),
       studioNotice: data.get("studioNotice").trim(),
       teacherMemo: data.get("teacherMemo").trim(),
       updatedAt: new Date().toISOString(),
     };
-
-    if (next.receiptChecked && !next.receiptDate) next.receiptDate = today();
 
     if (editingStudentId) {
       state.students = state.students.map((student) => (student.id === editingStudentId ? next : student));
@@ -728,6 +1109,7 @@ function bindCourseModal() {
 
 function closeModals() {
   editingStudentId = null;
+  receiptStudentId = null;
   document.querySelectorAll(".overlay").forEach((overlay) => {
     overlay.classList.remove("show");
     overlay.setAttribute("aria-hidden", "true");
