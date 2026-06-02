@@ -493,7 +493,7 @@ textarea:focus {
 
 .receipt-row {
   display: grid;
-  grid-template-columns: minmax(150px, 1fr) minmax(145px, 0.7fr) minmax(180px, 1fr) auto;
+  grid-template-columns: minmax(150px, 1fr) minmax(145px, 0.7fr) minmax(180px, 1fr) minmax(260px, auto);
   gap: 10px;
   align-items: end;
   border: 1px solid var(--line);
@@ -542,6 +542,11 @@ textarea:focus {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  justify-content: flex-end;
+}
+
+.receipt-actions .btn {
+  min-width: 68px;
 }
 
 .add-receipt-form {
@@ -593,6 +598,10 @@ textarea:focus {
   .course-row,
   .receipt-row {
     grid-template-columns: 1fr;
+  }
+
+  .receipt-actions {
+    justify-content: flex-start;
   }
 
   .meta {

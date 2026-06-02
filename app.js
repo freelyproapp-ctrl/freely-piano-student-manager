@@ -1,6 +1,7 @@
 const STORAGE_KEY = "pianoStudioManager.v3";
 const SESSION_KEY = "pianoStudioManager.session";
 const DEFAULT_STUDIO_NAME = "freelyピアノ教室";
+const RECEIPT_HISTORY_START = "2026-04";
 const RECEIPT_TYPES = {
   monthly: "月謝",
   facility: "施設費",
@@ -78,7 +79,15 @@ function addMonths(date, amount) {
 
 function lastTwelveMonths() {
   const now = new Date();
-  return Array.from({ length: 12 }, (_, index) => monthKey(addMonths(now, -index)));
+  const months = [];
+  const [startYear, startMonth] = RECEIPT_HISTORY_START.split("-").map(Number);
+  const cursor = new Date(startYear, startMonth - 1, 1);
+  const current = new Date(now.getFullYear(), now.getMonth(), 1);
+  while (cursor <= current) {
+    months.push(monthKey(cursor));
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+  return months.slice(-12).reverse();
 }
 
 function formatMonth(key) {
@@ -231,20 +240,25 @@ function createReceiptItems(student) {
 
 function normalizeReceiptItems(student) {
   const existing = Array.isArray(student.receiptItems) ? student.receiptItems : [];
-  const normalized = existing.map((item) => ({
-    id: item.id || uid("receipt"),
-    type: item.type || "other",
-    label: item.label || RECEIPT_TYPES[item.type] || "その他",
-    targetMonth: item.targetMonth || monthKey(),
-    amount: Number(item.amount || 0),
-    receiptDate: item.receiptDate || "",
-    memo: item.memo || "",
-    required: item.type === "leave" ? false : item.required !== false,
-  }));
+  const activeMonths = new Set(lastTwelveMonths());
+  const currentMonth = monthKey();
+  const normalized = existing
+    .map((item) => ({
+      id: item.id || uid("receipt"),
+      type: item.type || "other",
+      label: item.label || RECEIPT_TYPES[item.type] || "その他",
+      targetMonth: item.targetMonth || monthKey(),
+      amount: Number(item.amount || 0),
+      receiptDate: item.receiptDate || "",
+      memo: item.memo || "",
+      required: item.type === "leave" || item.type === "deleted-monthly" ? false : item.required !== false,
+    }))
+    .filter((item) => activeMonths.has(item.targetMonth) || item.targetMonth >= currentMonth);
 
   const monthSet = new Set(normalized.filter((item) => item.type === "monthly").map((item) => item.targetMonth));
+  const hiddenMonthlySet = new Set(normalized.filter((item) => item.type === "deleted-monthly").map((item) => item.targetMonth));
   const missingMonthly = lastTwelveMonths()
-    .filter((month) => !monthSet.has(month))
+    .filter((month) => !monthSet.has(month) && !hiddenMonthlySet.has(month))
     .map((month) => ({
       id: uid("receipt"),
       type: "monthly",
@@ -303,7 +317,7 @@ function normalizeReceiptItems(student) {
 }
 
 function sortReceiptItems(items) {
-  const typeOrder = { leave: 0, monthly: 1, facility: 2, live: 3, recital: 4, other: 5 };
+  const typeOrder = { leave: 0, monthly: 1, facility: 2, live: 3, recital: 4, other: 5, "deleted-monthly": 9 };
   return [...items].sort((a, b) => {
     if (a.targetMonth !== b.targetMonth) return b.targetMonth.localeCompare(a.targetMonth);
     return (typeOrder[a.type] || 9) - (typeOrder[b.type] || 9);
@@ -756,14 +770,14 @@ function receiptModalTemplate() {
   if (!student) {
     return `<div class="overlay" id="receiptOverlay" aria-hidden="true"></div>`;
   }
-  const rows = sortReceiptItems(student.receiptItems || []);
+  const rows = sortReceiptItems(student.receiptItems || []).filter((item) => item.type !== "deleted-monthly");
   return `
     <div class="overlay" id="receiptOverlay" aria-hidden="true">
       <div class="modal receipt-modal" role="dialog" aria-modal="true">
         <div class="modal-head">
           <div>
             <h2>${escapeHtml(student.name)}さんの入金履歴</h2>
-            <p class="subtle">過去12か月の月謝と、年1回の徴収項目を確認できます</p>
+            <p class="subtle">2026年4月以降、直近1年分の月謝と年1回の徴収項目を確認できます</p>
           </div>
           <button class="btn icon secondary" data-close-modal type="button">×</button>
         </div>
@@ -816,7 +830,8 @@ function receiptRowTemplate(item) {
         ${isLeave ? "" : `<button class="btn ${paid ? "secondary" : ""}" type="button" data-mark-receipt="${item.id}">${paid ? "日付更新" : "領収"}</button>`}
         <button class="btn secondary" type="button" data-save-receipt="${item.id}">保存</button>
         ${isLeave ? "" : `<button class="btn danger" type="button" data-clear-receipt="${item.id}">取消</button>`}
-        ${item.type !== "monthly" ? `<button class="btn danger" type="button" data-delete-receipt="${item.id}">削除</button>` : ""}
+        ${isLeave ? "" : `<button class="btn secondary" type="button" data-leave-receipt="${item.id}">休会中</button>`}
+        <button class="btn danger" type="button" data-delete-receipt="${item.id}">削除</button>
       </div>
     </div>
   `;
@@ -1044,10 +1059,35 @@ function bindReceiptModal() {
     });
   });
 
+  overlay.querySelectorAll("[data-leave-receipt]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const student = getStudent(receiptStudentId);
+      const item = student.receiptItems.find((receipt) => receipt.id === button.dataset.leaveReceipt);
+      if (!item) return;
+      addLeaveItems(student, item.targetMonth, item.memo || "休会中のため月謝不要");
+      student.updatedAt = new Date().toISOString();
+      await saveState("3か月分の休会を追加しました");
+      setTimeout(() => openReceiptModal(student.id), 0);
+    });
+  });
+
   overlay.querySelectorAll("[data-delete-receipt]").forEach((button) => {
     button.addEventListener("click", async () => {
       const student = getStudent(receiptStudentId);
-      student.receiptItems = student.receiptItems.filter((item) => item.id !== button.dataset.deleteReceipt);
+      const item = student.receiptItems.find((receipt) => receipt.id === button.dataset.deleteReceipt);
+      student.receiptItems = student.receiptItems.filter((receipt) => receipt.id !== button.dataset.deleteReceipt);
+      if (item?.type === "monthly") {
+        student.receiptItems.push({
+          id: uid("receipt"),
+          type: "deleted-monthly",
+          label: "削除済み月謝",
+          targetMonth: item.targetMonth,
+          amount: 0,
+          receiptDate: "",
+          memo: "削除済み",
+          required: false,
+        });
+      }
       student.updatedAt = new Date().toISOString();
       await saveState("入金項目を削除しました");
       setTimeout(() => openReceiptModal(student.id), 0);
@@ -1061,24 +1101,7 @@ function bindReceiptModal() {
     const type = data.get("type");
     const targetMonth = data.get("targetMonth") || monthKey();
     if (type === "leave") {
-      const [year, month] = targetMonth.split("-").map(Number);
-      const start = new Date(year, month - 1, 1);
-      for (let index = 0; index < 3; index += 1) {
-        const leaveMonth = monthKey(addMonths(start, index));
-        const exists = student.receiptItems.some((item) => item.type === "leave" && item.targetMonth === leaveMonth);
-        if (!exists) {
-          student.receiptItems.push({
-            id: uid("receipt"),
-            type: "leave",
-            label: "休会中",
-            targetMonth: leaveMonth,
-            amount: 0,
-            receiptDate: "",
-            memo: data.get("memo").trim() || "休会中のため月謝不要",
-            required: false,
-          });
-        }
-      }
+      addLeaveItems(student, targetMonth, data.get("memo").trim() || "休会中のため月謝不要");
     } else {
       student.receiptItems.push({
         id: uid("receipt"),
@@ -1096,6 +1119,28 @@ function bindReceiptModal() {
     await saveState(type === "leave" ? "3か月分の休会を追加しました" : "入金項目を追加しました");
     setTimeout(() => openReceiptModal(student.id), 0);
   });
+}
+
+function addLeaveItems(student, targetMonth, memo) {
+  const [year, month] = targetMonth.split("-").map(Number);
+  const start = new Date(year, month - 1, 1);
+  for (let index = 0; index < 3; index += 1) {
+    const leaveMonth = monthKey(addMonths(start, index));
+    const exists = student.receiptItems.some((item) => item.type === "leave" && item.targetMonth === leaveMonth);
+    if (!exists) {
+      student.receiptItems.push({
+        id: uid("receipt"),
+        type: "leave",
+        label: "休会中",
+        targetMonth: leaveMonth,
+        amount: 0,
+        receiptDate: "",
+        memo,
+        required: false,
+      });
+    }
+  }
+  student.receiptItems = sortReceiptItems(student.receiptItems);
 }
 
 async function updateReceiptItem(receiptId, updates, message) {
