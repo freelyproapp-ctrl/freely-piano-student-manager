@@ -6,6 +6,7 @@ const RECEIPT_TYPES = {
   facility: "施設費",
   live: "ライブ参加費",
   recital: "発表会費",
+  leave: "休会中",
   other: "その他",
 };
 
@@ -91,6 +92,14 @@ function yen(value) {
 
 function isVisitCourse(courseId, courses = COURSE_PRESETS) {
   return courses.find((course) => course.id === courseId)?.name.includes("出張");
+}
+
+function isTicketCourse(courseId) {
+  return getCourse(courseId)?.name.includes("チケット");
+}
+
+function isFaceToFaceMonthlyCourse(courseId) {
+  return getCourse(courseId)?.name.includes("対面月謝");
 }
 
 function createDefaultState() {
@@ -230,7 +239,7 @@ function normalizeReceiptItems(student) {
     amount: Number(item.amount || 0),
     receiptDate: item.receiptDate || "",
     memo: item.memo || "",
-    required: item.required !== false,
+    required: item.type === "leave" ? false : item.required !== false,
   }));
 
   const monthSet = new Set(normalized.filter((item) => item.type === "monthly").map((item) => item.targetMonth));
@@ -294,7 +303,7 @@ function normalizeReceiptItems(student) {
 }
 
 function sortReceiptItems(items) {
-  const typeOrder = { monthly: 1, facility: 2, live: 3, recital: 4, other: 5 };
+  const typeOrder = { leave: 0, monthly: 1, facility: 2, live: 3, recital: 4, other: 5 };
   return [...items].sort((a, b) => {
     if (a.targetMonth !== b.targetMonth) return b.targetMonth.localeCompare(a.targetMonth);
     return (typeOrder[a.type] || 9) - (typeOrder[b.type] || 9);
@@ -305,9 +314,14 @@ function currentMonthlyReceipt(student) {
   return student.receiptItems.find((item) => item.type === "monthly" && item.targetMonth === monthKey());
 }
 
+function leaveItemForMonth(student, targetMonth = monthKey()) {
+  return (student.receiptItems || []).find((item) => item.type === "leave" && item.targetMonth === targetMonth);
+}
+
 function receiptSummary(student) {
   const items = student.receiptItems || [];
-  const requiredItems = items.filter((item) => item.required !== false);
+  const leaveMonths = new Set(items.filter((item) => item.type === "leave").map((item) => item.targetMonth));
+  const requiredItems = items.filter((item) => item.required !== false && !(item.type === "monthly" && leaveMonths.has(item.targetMonth)));
   const paidItems = requiredItems.filter((item) => item.receiptDate);
   const unpaidItems = requiredItems.filter((item) => !item.receiptDate);
   const latest = [...paidItems].sort((a, b) => b.receiptDate.localeCompare(a.receiptDate))[0];
@@ -594,9 +608,15 @@ function loginTemplate() {
 }
 
 function teacherTemplate() {
-  const paid = state.students.filter((student) => currentMonthlyReceipt(student)?.receiptDate).length;
-  const unpaid = state.students.length - paid;
-  const monthly = state.students.reduce((sum, student) => sum + Number(student.fee || 0), 0);
+  const activeMonthlyStudents = state.students.filter((student) => !leaveItemForMonth(student));
+  const paid = activeMonthlyStudents.filter((student) => currentMonthlyReceipt(student)?.receiptDate).length;
+  const unpaid = activeMonthlyStudents.length - paid;
+  const faceMonthly = state.students
+    .filter((student) => isFaceToFaceMonthlyCourse(student.courseId))
+    .reduce((sum, student) => sum + Number(student.fee || 0), 0);
+  const ticketTotal = state.students
+    .filter((student) => isTicketCourse(student.courseId))
+    .reduce((sum, student) => sum + Number(student.fee || 0), 0);
   const totalUnpaidItems = state.students.reduce((sum, student) => sum + receiptSummary(student).unpaidItems.length, 0);
   const filtered = state.students.filter((student) => {
     const haystack = `${student.name} ${student.grade} ${student.lessonDay} ${getCourse(student.courseId).name}`.toLowerCase();
@@ -619,11 +639,27 @@ function teacherTemplate() {
           </label>
           <button class="btn secondary" type="submit">教室名を保存</button>
         </form>
+        <form class="panel password-settings" id="passwordForm">
+          <div>
+            <h2>ログインパスワード変更</h2>
+            <p class="subtle">管理画面へログインするパスワードを変更できます</p>
+          </div>
+          <label class="field">
+            <span>新しいパスワード</span>
+            <input name="newPassword" type="password" autocomplete="new-password" minlength="6" />
+          </label>
+          <label class="field">
+            <span>確認</span>
+            <input name="confirmPassword" type="password" autocomplete="new-password" minlength="6" />
+          </label>
+          <button class="btn secondary" type="submit">パスワードを変更</button>
+        </form>
         <div class="stats">
           <div class="stat"><span class="subtle">生徒数</span><strong>${state.students.length}</strong></div>
           <div class="stat"><span class="subtle">今月月謝 領収済み</span><strong>${paid}</strong></div>
           <div class="stat"><span class="subtle">今月月謝 未確認</span><strong>${unpaid}</strong></div>
-          <div class="stat"><span class="subtle">月額合計</span><strong>${yen(monthly)}</strong></div>
+          <div class="stat"><span class="subtle">対面月謝 合計</span><strong>${yen(faceMonthly)}</strong></div>
+          <div class="stat"><span class="subtle">チケット費 合計</span><strong>${yen(ticketTotal)}</strong></div>
           <div class="stat"><span class="subtle">未領収項目</span><strong>${totalUnpaidItems}</strong></div>
         </div>
         <section class="panel">
@@ -649,26 +685,33 @@ function teacherTemplate() {
 function studentCardTemplate(student) {
   const course = getCourse(student.courseId);
   const currentReceipt = currentMonthlyReceipt(student);
+  const currentLeave = leaveItemForMonth(student);
   const summary = receiptSummary(student);
   return `
     <article class="student-card" data-student-card="${student.id}">
       <div class="card-head">
         <div>
-          <div class="card-name">${escapeHtml(student.name)}</div>
+          <button class="card-name name-button" data-edit="${student.id}" type="button">${escapeHtml(student.name)}</button>
           <p class="subtle">${escapeHtml(student.grade)} / ${escapeHtml(course.name)}</p>
         </div>
-        <span class="badge ${currentReceipt?.receiptDate ? "" : "warn"}">${currentReceipt?.receiptDate ? "今月領収済み" : "今月未確認"}</span>
+        <span class="badge ${currentLeave || currentReceipt?.receiptDate ? "" : "warn"}">${
+          currentLeave ? "今月休会中" : currentReceipt?.receiptDate ? "今月領収済み" : "今月未確認"
+        }</span>
       </div>
       <div class="meta">
         <div><span>レッスン</span>${escapeHtml(student.lessonDay)}曜 ${escapeHtml(student.startTime)}</div>
         <div><span>レッスン費</span>${yen(student.fee)}</div>
-        <div><span>今月月謝</span>${currentReceipt?.receiptDate ? currentReceipt.receiptDate : "未領収"}</div>
+        <div><span>今月月謝</span>${currentLeave ? "休会中" : currentReceipt?.receiptDate ? currentReceipt.receiptDate : "未領収"}</div>
         <div><span>直近領収</span>${summary.latest ? `${summary.latest.receiptDate} ${escapeHtml(summary.latest.label)}` : "なし"}</div>
         <div><span>未領収項目</span>${summary.unpaidItems.length}件</div>
         <div><span>講師メモ</span>${escapeHtml(student.teacherMemo || "なし")}</div>
       </div>
       <div class="card-actions">
-        <button class="btn" data-quick-receipt="${student.id}">${currentReceipt?.receiptDate ? "領収日更新" : "今月月謝を領収"}</button>
+        ${
+          currentLeave
+            ? `<button class="btn secondary" type="button" disabled>休会中</button>`
+            : `<button class="btn" data-quick-receipt="${student.id}">${currentReceipt?.receiptDate ? "領収日更新" : "今月月謝を領収"}</button>`
+        }
         <button class="btn secondary" data-receipts="${student.id}">入金履歴</button>
         <button class="btn secondary" data-edit="${student.id}">編集</button>
         <button class="btn danger" data-delete="${student.id}">削除</button>
@@ -728,7 +771,7 @@ function receiptModalTemplate() {
           ${rows.map((item) => receiptRowTemplate(item)).join("")}
         </div>
         <form class="form add-receipt-form" id="addReceiptForm">
-          <h3>その他の入金項目を追加</h3>
+          <h3>入金・休会項目を追加</h3>
           <div class="form-grid">
             <label class="field">
               <span>種類</span>
@@ -750,24 +793,29 @@ function receiptModalTemplate() {
 
 function receiptRowTemplate(item) {
   const paid = Boolean(item.receiptDate);
+  const isLeave = item.type === "leave";
   return `
-    <div class="receipt-row ${paid ? "paid" : "unpaid"}" data-receipt-row="${item.id}">
+    <div class="receipt-row ${isLeave ? "leave" : paid ? "paid" : "unpaid"}" data-receipt-row="${item.id}">
       <div>
         <strong>${escapeHtml(item.label || RECEIPT_TYPES[item.type] || "その他")}</strong>
-        <span>${formatMonth(item.targetMonth)} / ${yen(item.amount)}</span>
+        <span>${formatMonth(item.targetMonth)} / ${isLeave ? "月謝不要" : yen(item.amount)}</span>
       </div>
-      <label>
-        <span>領収日</span>
-        <input data-receipt-date="${item.id}" type="date" value="${escapeHtml(item.receiptDate || "")}" />
-      </label>
+      ${
+        isLeave
+          ? `<div class="receipt-note"><span>扱い</span>未領収に含めない</div>`
+          : `<label>
+              <span>領収日</span>
+              <input data-receipt-date="${item.id}" type="date" value="${escapeHtml(item.receiptDate || "")}" />
+            </label>`
+      }
       <label>
         <span>メモ</span>
         <input data-receipt-memo="${item.id}" value="${escapeHtml(item.memo || "")}" />
       </label>
       <div class="receipt-actions">
-        <button class="btn ${paid ? "secondary" : ""}" type="button" data-mark-receipt="${item.id}">${paid ? "日付更新" : "領収"}</button>
+        ${isLeave ? "" : `<button class="btn ${paid ? "secondary" : ""}" type="button" data-mark-receipt="${item.id}">${paid ? "日付更新" : "領収"}</button>`}
         <button class="btn secondary" type="button" data-save-receipt="${item.id}">保存</button>
-        <button class="btn danger" type="button" data-clear-receipt="${item.id}">取消</button>
+        ${isLeave ? "" : `<button class="btn danger" type="button" data-clear-receipt="${item.id}">取消</button>`}
         ${item.type !== "monthly" ? `<button class="btn danger" type="button" data-delete-receipt="${item.id}">削除</button>` : ""}
       </div>
     </div>
@@ -878,6 +926,32 @@ function bindTeacher() {
     state.studioName = data.get("studioName").trim() || DEFAULT_STUDIO_NAME;
     await saveState("教室名を保存しました");
   });
+  document.querySelector("#passwordForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const newPassword = data.get("newPassword").trim();
+    const confirmPassword = data.get("confirmPassword").trim();
+    if (newPassword.length < 6) {
+      alert("パスワードは6文字以上で入力してください。");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      alert("確認用パスワードが一致しません。");
+      return;
+    }
+    if (cloudEnabled && supabase && authUser) {
+      const { error } = await supabase.auth.updateUser({ password: newPassword });
+      if (error) {
+        alert("パスワード変更に失敗しました。もう一度お試しください。");
+        return;
+      }
+    } else {
+      state.teacher.password = newPassword;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    }
+    event.currentTarget.reset();
+    toast("パスワードを変更しました");
+  });
 
   document.querySelectorAll("[data-edit]").forEach((button) => {
     button.addEventListener("click", () => openStudentModal(button.dataset.edit));
@@ -952,10 +1026,11 @@ function bindReceiptModal() {
   overlay.querySelectorAll("[data-save-receipt]").forEach((button) => {
     button.addEventListener("click", async () => {
       const id = button.dataset.saveReceipt;
+      const dateInput = overlay.querySelector(`[data-receipt-date="${id}"]`);
       await updateReceiptItem(
         id,
         {
-          receiptDate: overlay.querySelector(`[data-receipt-date="${id}"]`).value,
+          receiptDate: dateInput ? dateInput.value : "",
           memo: overlay.querySelector(`[data-receipt-memo="${id}"]`).value.trim(),
         },
         "入金履歴を保存しました",
@@ -984,19 +1059,41 @@ function bindReceiptModal() {
     const student = getStudent(receiptStudentId);
     const data = new FormData(event.currentTarget);
     const type = data.get("type");
-    student.receiptItems.push({
-      id: uid("receipt"),
-      type,
-      label: data.get("label").trim() || RECEIPT_TYPES[type] || "その他",
-      targetMonth: data.get("targetMonth") || monthKey(),
-      amount: Number(data.get("amount") || 0),
-      receiptDate: "",
-      memo: data.get("memo").trim(),
-      required: true,
-    });
+    const targetMonth = data.get("targetMonth") || monthKey();
+    if (type === "leave") {
+      const [year, month] = targetMonth.split("-").map(Number);
+      const start = new Date(year, month - 1, 1);
+      for (let index = 0; index < 3; index += 1) {
+        const leaveMonth = monthKey(addMonths(start, index));
+        const exists = student.receiptItems.some((item) => item.type === "leave" && item.targetMonth === leaveMonth);
+        if (!exists) {
+          student.receiptItems.push({
+            id: uid("receipt"),
+            type: "leave",
+            label: "休会中",
+            targetMonth: leaveMonth,
+            amount: 0,
+            receiptDate: "",
+            memo: data.get("memo").trim() || "休会中のため月謝不要",
+            required: false,
+          });
+        }
+      }
+    } else {
+      student.receiptItems.push({
+        id: uid("receipt"),
+        type,
+        label: data.get("label").trim() || RECEIPT_TYPES[type] || "その他",
+        targetMonth,
+        amount: Number(data.get("amount") || 0),
+        receiptDate: "",
+        memo: data.get("memo").trim(),
+        required: true,
+      });
+    }
     student.receiptItems = sortReceiptItems(student.receiptItems);
     student.updatedAt = new Date().toISOString();
-    await saveState("入金項目を追加しました");
+    await saveState(type === "leave" ? "3か月分の休会を追加しました" : "入金項目を追加しました");
     setTimeout(() => openReceiptModal(student.id), 0);
   });
 }

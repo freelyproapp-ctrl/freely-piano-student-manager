@@ -292,6 +292,13 @@ textarea:focus {
   align-items: end;
 }
 
+.password-settings {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) minmax(160px, 0.8fr) minmax(160px, 0.8fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
 .stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -345,6 +352,20 @@ textarea:focus {
 .card-name {
   font-size: 20px;
   font-weight: 900;
+}
+
+.name-button {
+  min-height: auto;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  padding: 0;
+  text-align: left;
+}
+
+.name-button:hover {
+  color: var(--brand-dark);
+  text-decoration: underline;
 }
 
 .badge {
@@ -489,6 +510,10 @@ textarea:focus {
   background: #fffdf6;
 }
 
+.receipt-row.leave {
+  background: #eef8f1;
+}
+
 .receipt-row strong,
 .receipt-row span,
 .receipt-row label span {
@@ -505,6 +530,12 @@ textarea:focus {
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
+}
+
+.receipt-note {
+  min-height: 42px;
+  display: grid;
+  align-content: center;
 }
 
 .receipt-actions {
@@ -545,7 +576,8 @@ textarea:focus {
 
   .topbar,
   .toolbar,
-  .login-wrap {
+  .login-wrap,
+  .password-settings {
     grid-template-columns: 1fr;
   }
 
