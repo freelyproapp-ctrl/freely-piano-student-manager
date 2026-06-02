@@ -55,6 +55,7 @@ let authUser = null;
 let searchTerm = "";
 let editingStudentId = null;
 let receiptStudentId = null;
+let isReceiptModalOpen = false;
 let isLoading = true;
 let loadingMessage = "起動しています";
 let syncMessage = cloudEnabled ? "クラウド保存を準備中です" : "デモ保存中です";
@@ -772,7 +773,7 @@ function receiptModalTemplate() {
   }
   const rows = sortReceiptItems(student.receiptItems || []).filter((item) => item.type !== "deleted-monthly");
   return `
-    <div class="overlay" id="receiptOverlay" aria-hidden="true">
+    <div class="overlay ${isReceiptModalOpen ? "show" : ""}" id="receiptOverlay" aria-hidden="${isReceiptModalOpen ? "false" : "true"}">
       <div class="modal receipt-modal" role="dialog" aria-modal="true">
         <div class="modal-head">
           <div>
@@ -1020,9 +1021,8 @@ function openStudentModal(id) {
 
 function openReceiptModal(id) {
   receiptStudentId = id;
+  isReceiptModalOpen = true;
   render();
-  document.querySelector("#receiptOverlay").classList.add("show");
-  document.querySelector("#receiptOverlay").setAttribute("aria-hidden", "false");
 }
 
 function bindReceiptModal() {
@@ -1067,7 +1067,6 @@ function bindReceiptModal() {
       addLeaveItems(student, item.targetMonth, item.memo || "休会中のため月謝不要");
       student.updatedAt = new Date().toISOString();
       await saveState("3か月分の休会を追加しました");
-      setTimeout(() => openReceiptModal(student.id), 0);
     });
   });
 
@@ -1090,7 +1089,6 @@ function bindReceiptModal() {
       }
       student.updatedAt = new Date().toISOString();
       await saveState("入金項目を削除しました");
-      setTimeout(() => openReceiptModal(student.id), 0);
     });
   });
 
@@ -1117,7 +1115,6 @@ function bindReceiptModal() {
     student.receiptItems = sortReceiptItems(student.receiptItems);
     student.updatedAt = new Date().toISOString();
     await saveState(type === "leave" ? "3か月分の休会を追加しました" : "入金項目を追加しました");
-    setTimeout(() => openReceiptModal(student.id), 0);
   });
 }
 
@@ -1152,7 +1149,6 @@ async function updateReceiptItem(receiptId, updates, message) {
   student.receiptMemo = current?.memo || "";
   student.updatedAt = new Date().toISOString();
   await saveState(message);
-  setTimeout(() => openReceiptModal(student.id), 0);
 }
 
 function bindStudentModal() {
@@ -1252,6 +1248,7 @@ function bindCourseModal() {
 function closeModals() {
   editingStudentId = null;
   receiptStudentId = null;
+  isReceiptModalOpen = false;
   document.querySelectorAll(".overlay").forEach((overlay) => {
     overlay.classList.remove("show");
     overlay.setAttribute("aria-hidden", "true");
