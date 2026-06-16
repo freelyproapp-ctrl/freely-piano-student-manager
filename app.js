@@ -12,10 +12,10 @@ const RECEIPT_TYPES = {
 };
 
 const COURSE_PRESETS = [
-  { id: "monthly-beyer", name: "対面月謝 バイエル程度", fee: 6600 },
-  { id: "monthly-burgmuller", name: "対面月謝 ブルグミュラー程度", fee: 7700 },
-  { id: "monthly-sonatine", name: "対面月謝 ソナチネ程度", fee: 8800 },
-  { id: "monthly-sonata", name: "対面月謝 ソナタ・コード譜程度", fee: 9900 },
+  { id: "monthly-beyer", name: "レギュラー月謝 バイエル程度", fee: 6600 },
+  { id: "monthly-burgmuller", name: "レギュラー月謝 ブルグミュラー程度", fee: 7700 },
+  { id: "monthly-sonatine", name: "レギュラー月謝 ソナチネ程度", fee: 8800 },
+  { id: "monthly-sonata", name: "レギュラー月謝 ソナタ・コード譜程度", fee: 9900 },
   { id: "single-60", name: "1レッスン 60分 対面", fee: 4400 },
   { id: "single-60-visit", name: "1レッスン 60分 出張", fee: 5500 },
   { id: "single-80", name: "1レッスン 80分 対面", fee: 6600 },
@@ -53,6 +53,7 @@ let session = loadLocalSession();
 let supabase = null;
 let authUser = null;
 let searchTerm = "";
+let cardFilter = "all";
 let editingStudentId = null;
 let receiptStudentId = null;
 let isReceiptModalOpen = false;
@@ -109,7 +110,11 @@ function isTicketCourse(courseId) {
 }
 
 function isFaceToFaceMonthlyCourse(courseId) {
-  return getCourse(courseId)?.name.includes("対面月謝");
+  return getCourse(courseId)?.name.includes("レギュラー月謝");
+}
+
+function normalizeCourseName(name) {
+  return String(name || "").replace("対面月謝", "レギュラー月謝");
 }
 
 function createDefaultState() {
@@ -166,7 +171,7 @@ function normalizeState(saved) {
   };
   next.courses = (next.courses || COURSE_PRESETS).map((course) => ({
     id: course.id,
-    name: course.name,
+    name: normalizeCourseName(course.name),
     fee: Number(course.fee || 0),
   }));
   next.students = (next.students || []).map((student) => ({
@@ -399,7 +404,7 @@ function toDbCourse(course, orderIndex) {
   return {
     id: course.id,
     user_id: authUser.id,
-    name: course.name,
+    name: normalizeCourseName(course.name),
     fee: Number(course.fee || 0),
     order_index: orderIndex,
   };
@@ -429,7 +434,7 @@ function toDbStudent(student, orderIndex) {
 function fromDbCourse(course) {
   return {
     id: course.id,
-    name: course.name,
+    name: normalizeCourseName(course.name),
     fee: Number(course.fee || 0),
   };
 }
@@ -613,10 +618,12 @@ function loginTemplate() {
 }
 
 function teacherTemplate() {
-  const activeMonthlyStudents = state.students.filter((student) => !leaveItemForMonth(student));
+  const regularMonthlyStudents = state.students.filter((student) => isFaceToFaceMonthlyCourse(student.courseId));
+  const activeMonthlyStudents = regularMonthlyStudents.filter((student) => !leaveItemForMonth(student));
+  const unpaidMonthlyStudents = activeMonthlyStudents.filter((student) => !currentMonthlyReceipt(student)?.receiptDate);
   const paid = activeMonthlyStudents.filter((student) => currentMonthlyReceipt(student)?.receiptDate).length;
-  const unpaid = activeMonthlyStudents.length - paid;
-  const faceMonthly = state.students
+  const unpaid = unpaidMonthlyStudents.length;
+  const regularMonthly = regularMonthlyStudents
     .filter((student) => isFaceToFaceMonthlyCourse(student.courseId))
     .reduce((sum, student) => sum + Number(student.fee || 0), 0);
   const ticketTotal = state.students
@@ -624,9 +631,11 @@ function teacherTemplate() {
     .reduce((sum, student) => sum + Number(student.fee || 0), 0);
   const totalUnpaidItems = state.students.reduce((sum, student) => sum + receiptSummary(student).unpaidItems.length, 0);
   const filtered = state.students.filter((student) => {
+    if (cardFilter === "monthly-unpaid" && !unpaidMonthlyStudents.some((item) => item.id === student.id)) return false;
     const haystack = `${student.name} ${student.grade} ${student.lessonDay} ${getCourse(student.courseId).name}`.toLowerCase();
     return haystack.includes(searchTerm.toLowerCase());
   });
+  const filterLabel = cardFilter === "monthly-unpaid" ? "今月月謝が未確認の生徒さんを表示中" : "";
 
   return shell(
     `
@@ -662,8 +671,8 @@ function teacherTemplate() {
         <div class="stats">
           <div class="stat"><span class="subtle">生徒数</span><strong>${state.students.length}</strong></div>
           <div class="stat"><span class="subtle">今月月謝 領収済み</span><strong>${paid}</strong></div>
-          <div class="stat"><span class="subtle">今月月謝 未確認</span><strong>${unpaid}</strong></div>
-          <div class="stat"><span class="subtle">対面月謝 合計</span><strong>${yen(faceMonthly)}</strong></div>
+          <button class="stat stat-button" id="showMonthlyUnpaid" type="button"><span class="subtle">今月月謝 未確認</span><strong>${unpaid}</strong><small>押すと該当者を表示</small></button>
+          <div class="stat"><span class="subtle">レギュラー月謝 合計</span><strong>${yen(regularMonthly)}</strong></div>
           <div class="stat"><span class="subtle">チケット費 合計</span><strong>${yen(ticketTotal)}</strong></div>
           <div class="stat"><span class="subtle">未領収項目</span><strong>${totalUnpaidItems}</strong></div>
         </div>
@@ -671,8 +680,9 @@ function teacherTemplate() {
           <div class="panel-head">
             <div>
               <h2>生徒カード</h2>
-              <p class="subtle">レッスン予定と領収状況を一覧で確認できます</p>
+              <p class="subtle">${filterLabel || "レッスン予定と領収状況を一覧で確認できます"}</p>
             </div>
+            ${cardFilter === "monthly-unpaid" ? `<button class="btn secondary" id="clearCardFilter" type="button">全員表示に戻す</button>` : ""}
           </div>
           <div class="student-grid">
             ${filtered.map(studentCardTemplate).join("") || `<p class="subtle">該当する生徒がいません。</p>`}
@@ -926,6 +936,14 @@ function bindTeacher() {
   });
   document.querySelector("#addStudent").addEventListener("click", () => openStudentModal(null));
   document.querySelector("#courseSettings").addEventListener("click", openCourseModal);
+  document.querySelector("#showMonthlyUnpaid").addEventListener("click", () => {
+    cardFilter = "monthly-unpaid";
+    render();
+  });
+  document.querySelector("#clearCardFilter")?.addEventListener("click", () => {
+    cardFilter = "all";
+    render();
+  });
   document.querySelector("#studioForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
