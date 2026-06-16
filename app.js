@@ -213,30 +213,32 @@ function createReceiptItems(student) {
     });
   }
 
-  annualItems.push(
-    {
-      id: uid("receipt"),
-      type: "live",
-      label: "ライブ参加費",
-      targetMonth: `${currentYear}-04`,
-      amount: 0,
-      receiptDate: today(),
-      memo: `${currentYear}年度分・金額は必要に応じて編集`,
-      required: true,
-    },
-    {
-      id: uid("receipt"),
-      type: "recital",
-      label: "発表会費",
-      targetMonth: `${currentYear}-09`,
-      amount: 0,
-      receiptDate: "",
-      memo: `${currentYear}年度分・これから徴収`,
-      required: true,
-    },
-  );
+  annualItems.push({
+    id: uid("receipt"),
+    type: "live",
+    label: "ライブ参加費",
+    targetMonth: `${currentYear}-04`,
+    amount: 0,
+    receiptDate: today(),
+    memo: `${currentYear}年度分・金額は必要に応じて編集`,
+    required: true,
+  });
 
   return [...monthlyItems, ...annualItems];
+}
+
+function isDeletedReceiptType(type) {
+  return String(type || "").startsWith("deleted-");
+}
+
+function isDefaultPendingRecital(item) {
+  return (
+    item.type === "recital" &&
+    item.label === "発表会費" &&
+    Number(item.amount || 0) === 0 &&
+    !item.receiptDate &&
+    String(item.memo || "").includes("これから徴収")
+  );
 }
 
 function normalizeReceiptItems(student) {
@@ -252,12 +254,14 @@ function normalizeReceiptItems(student) {
       amount: Number(item.amount || 0),
       receiptDate: item.receiptDate || "",
       memo: item.memo || "",
-      required: item.type === "leave" || item.type === "deleted-monthly" ? false : item.required !== false,
+      required: item.type === "leave" || isDeletedReceiptType(item.type) ? false : item.required !== false,
     }))
+    .filter((item) => !isDefaultPendingRecital(item))
     .filter((item) => activeMonths.has(item.targetMonth) || item.targetMonth >= currentMonth);
 
   const monthSet = new Set(normalized.filter((item) => item.type === "monthly").map((item) => item.targetMonth));
   const hiddenMonthlySet = new Set(normalized.filter((item) => item.type === "deleted-monthly").map((item) => item.targetMonth));
+  const deletedTypes = new Set(normalized.filter((item) => isDeletedReceiptType(item.type)).map((item) => item.type.replace("deleted-", "")));
   const missingMonthly = lastTwelveMonths()
     .filter((month) => !monthSet.has(month) && !hiddenMonthlySet.has(month))
     .map((month) => ({
@@ -271,9 +275,8 @@ function normalizeReceiptItems(student) {
       required: true,
     }));
 
-  const hasFacility = normalized.some((item) => item.type === "facility");
-  const hasLive = normalized.some((item) => item.type === "live");
-  const hasRecital = normalized.some((item) => item.type === "recital");
+  const hasFacility = normalized.some((item) => item.type === "facility") || deletedTypes.has("facility");
+  const hasLive = normalized.some((item) => item.type === "live") || deletedTypes.has("live");
   const annual = [];
   const currentYear = new Date().getFullYear();
 
@@ -301,24 +304,11 @@ function normalizeReceiptItems(student) {
       required: true,
     });
   }
-  if (!hasRecital) {
-    annual.push({
-      id: uid("receipt"),
-      type: "recital",
-      label: "発表会費",
-      targetMonth: `${currentYear}-09`,
-      amount: 0,
-      receiptDate: "",
-      memo: `${currentYear}年度分・これから徴収`,
-      required: true,
-    });
-  }
-
   return sortReceiptItems([...normalized, ...missingMonthly, ...annual]);
 }
 
 function sortReceiptItems(items) {
-  const typeOrder = { leave: 0, monthly: 1, facility: 2, live: 3, recital: 4, other: 5, "deleted-monthly": 9 };
+  const typeOrder = { leave: 0, monthly: 1, facility: 2, live: 3, recital: 4, other: 5 };
   return [...items].sort((a, b) => {
     if (a.targetMonth !== b.targetMonth) return b.targetMonth.localeCompare(a.targetMonth);
     return (typeOrder[a.type] || 9) - (typeOrder[b.type] || 9);
@@ -771,7 +761,7 @@ function receiptModalTemplate() {
   if (!student) {
     return `<div class="overlay" id="receiptOverlay" aria-hidden="true"></div>`;
   }
-  const rows = sortReceiptItems(student.receiptItems || []).filter((item) => item.type !== "deleted-monthly");
+  const rows = sortReceiptItems(student.receiptItems || []).filter((item) => !isDeletedReceiptType(item.type));
   return `
     <div class="overlay ${isReceiptModalOpen ? "show" : ""}" id="receiptOverlay" aria-hidden="${isReceiptModalOpen ? "false" : "true"}">
       <div class="modal receipt-modal" role="dialog" aria-modal="true">
@@ -1075,11 +1065,11 @@ function bindReceiptModal() {
       const student = getStudent(receiptStudentId);
       const item = student.receiptItems.find((receipt) => receipt.id === button.dataset.deleteReceipt);
       student.receiptItems = student.receiptItems.filter((receipt) => receipt.id !== button.dataset.deleteReceipt);
-      if (item?.type === "monthly") {
+      if (item?.type === "monthly" || item?.type === "facility" || item?.type === "live" || item?.type === "recital") {
         student.receiptItems.push({
           id: uid("receipt"),
-          type: "deleted-monthly",
-          label: "削除済み月謝",
+          type: `deleted-${item.type}`,
+          label: `削除済み${item.label || RECEIPT_TYPES[item.type] || "項目"}`,
           targetMonth: item.targetMonth,
           amount: 0,
           receiptDate: "",
