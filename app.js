@@ -619,16 +619,14 @@ function loginTemplate() {
 
 function teacherTemplate() {
   const regularMonthlyStudents = state.students.filter((student) => isFaceToFaceMonthlyCourse(student.courseId));
+  const ticketStudents = state.students.filter((student) => isTicketCourse(student.courseId));
   const activeMonthlyStudents = regularMonthlyStudents.filter((student) => !leaveItemForMonth(student));
   const unpaidMonthlyStudents = activeMonthlyStudents.filter((student) => !currentMonthlyReceipt(student)?.receiptDate);
-  const paid = activeMonthlyStudents.filter((student) => currentMonthlyReceipt(student)?.receiptDate).length;
+  const regularPaid = activeMonthlyStudents.filter((student) => currentMonthlyReceipt(student)?.receiptDate).length;
   const unpaid = unpaidMonthlyStudents.length;
-  const regularMonthly = regularMonthlyStudents
-    .filter((student) => isFaceToFaceMonthlyCourse(student.courseId))
-    .reduce((sum, student) => sum + Number(student.fee || 0), 0);
-  const ticketTotal = state.students
-    .filter((student) => isTicketCourse(student.courseId))
-    .reduce((sum, student) => sum + Number(student.fee || 0), 0);
+  const ticketPaid = ticketStudents.filter((student) => currentMonthlyReceipt(student)?.receiptDate).length;
+  const regularMonthly = regularMonthlyStudents.reduce((sum, student) => sum + Number(student.fee || 0), 0);
+  const ticketTotal = ticketStudents.reduce((sum, student) => sum + Number(student.fee || 0), 0);
   const totalUnpaidItems = state.students.reduce((sum, student) => sum + receiptSummary(student).unpaidItems.length, 0);
   const filtered = state.students.filter((student) => {
     if (cardFilter === "monthly-unpaid" && !unpaidMonthlyStudents.some((item) => item.id === student.id)) return false;
@@ -669,9 +667,11 @@ function teacherTemplate() {
           <button class="btn secondary" type="submit">パスワードを変更</button>
         </form>
         <div class="stats">
-          <div class="stat"><span class="subtle">生徒数</span><strong>${state.students.length}</strong></div>
-          <div class="stat"><span class="subtle">今月月謝 領収済み</span><strong>${paid}</strong></div>
+          <div class="stat"><span class="subtle">レギュラー生徒数</span><strong>${regularMonthlyStudents.length}</strong></div>
+          <div class="stat"><span class="subtle">レギュラー領収済み</span><strong>${regularPaid}</strong></div>
           <button class="stat stat-button" id="showMonthlyUnpaid" type="button"><span class="subtle">今月月謝 未確認</span><strong>${unpaid}</strong><small>押すと該当者を表示</small></button>
+          <div class="stat"><span class="subtle">チケット生徒数</span><strong>${ticketStudents.length}</strong></div>
+          <div class="stat"><span class="subtle">チケット領収済み</span><strong>${ticketPaid}</strong></div>
           <div class="stat"><span class="subtle">レギュラー月謝 合計</span><strong>${yen(regularMonthly)}</strong></div>
           <div class="stat"><span class="subtle">チケット費 合計</span><strong>${yen(ticketTotal)}</strong></div>
           <div class="stat"><span class="subtle">未領収項目</span><strong>${totalUnpaidItems}</strong></div>
