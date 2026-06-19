@@ -669,11 +669,11 @@ function teacherTemplate() {
         <div class="stats">
           <div class="stat"><span class="subtle">レギュラー生徒数</span><strong>${regularMonthlyStudents.length}</strong></div>
           <div class="stat"><span class="subtle">レギュラー領収済み</span><strong>${regularPaid}</strong></div>
-          <button class="stat stat-button" id="showMonthlyUnpaid" type="button"><span class="subtle">今月月謝 未確認</span><strong>${unpaid}</strong><small>押すと該当者を表示</small></button>
           <div class="stat"><span class="subtle">チケット生徒数</span><strong>${ticketStudents.length}</strong></div>
           <div class="stat"><span class="subtle">チケット領収済み</span><strong>${ticketPaid}</strong></div>
           <div class="stat"><span class="subtle">レギュラー月謝 合計</span><strong>${yen(regularMonthly)}</strong></div>
           <div class="stat"><span class="subtle">チケット費 合計</span><strong>${yen(ticketTotal)}</strong></div>
+          <button class="stat stat-button" id="showMonthlyUnpaid" type="button"><span class="subtle">今月月謝 未確認</span><strong>${unpaid}</strong><small>押すと該当者を表示</small></button>
           <div class="stat"><span class="subtle">未領収項目</span><strong>${totalUnpaidItems}</strong></div>
         </div>
         <section class="panel">
