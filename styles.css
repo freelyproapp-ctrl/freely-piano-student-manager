@@ -545,6 +545,12 @@ textarea:focus {
   margin-bottom: 4px;
 }
 
+.receipt-item-fields {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) minmax(110px, 0.7fr);
+  gap: 8px;
+}
+
 .receipt-row span,
 .receipt-row label span {
   color: var(--muted);
@@ -617,6 +623,10 @@ textarea:focus {
   .form-grid,
   .course-row,
   .receipt-row {
+    grid-template-columns: 1fr;
+  }
+
+  .receipt-item-fields {
     grid-template-columns: 1fr;
   }
 

@@ -4,6 +4,7 @@ const DEFAULT_STUDIO_NAME = "freelyピアノ教室";
 const RECEIPT_HISTORY_START = "2026-04";
 const RECEIPT_TYPES = {
   monthly: "月謝",
+  ticketLesson: "チケット制レッスン費",
   facility: "施設費",
   live: "ライブ参加費",
   recital: "発表会費",
@@ -117,6 +118,18 @@ function normalizeCourseName(name) {
   return String(name || "").replace("対面月謝", "レギュラー月謝");
 }
 
+function regularReceiptType(student) {
+  return isTicketCourse(student.courseId) ? "ticketLesson" : "monthly";
+}
+
+function regularReceiptLabel(student) {
+  return isTicketCourse(student.courseId) ? "チケット制レッスン費" : "月謝";
+}
+
+function isRegularReceiptItem(item) {
+  return item.type === "monthly" || item.type === "ticketLesson";
+}
+
 function createDefaultState() {
   const courses = COURSE_PRESETS.map((course) => ({ ...course }));
   const students = STUDENT_NAMES.map(([name, grade, day, startTime, courseId], index) => {
@@ -193,10 +206,12 @@ function createReceiptItems(student) {
   const currentYear = new Date().getFullYear();
   const months = lastTwelveMonths();
   const currentMonth = monthKey();
+  const receiptType = regularReceiptType(student);
+  const receiptLabel = regularReceiptLabel(student);
   const monthlyItems = months.map((month) => ({
     id: uid("receipt"),
-    type: "monthly",
-    label: "月謝",
+    type: receiptType,
+    label: receiptLabel,
     targetMonth: month,
     amount: Number(student.fee || 0),
     receiptDate: student.receiptChecked && month === currentMonth ? student.receiptDate || today() : "",
@@ -250,33 +265,47 @@ function normalizeReceiptItems(student) {
   const existing = Array.isArray(student.receiptItems) ? student.receiptItems : [];
   const activeMonths = new Set(lastTwelveMonths());
   const currentMonth = monthKey();
+  const receiptType = regularReceiptType(student);
+  const receiptLabel = regularReceiptLabel(student);
   const normalized = existing
-    .map((item) => ({
-      id: item.id || uid("receipt"),
-      type: item.type || "other",
-      label: item.label || RECEIPT_TYPES[item.type] || "その他",
-      targetMonth: item.targetMonth || monthKey(),
-      amount: Number(item.amount || 0),
-      receiptDate: item.receiptDate || "",
-      memo: item.memo || "",
-      required: item.type === "leave" || isDeletedReceiptType(item.type) ? false : item.required !== false,
-    }))
+    .map((item) => {
+      const originalType = item.type || "other";
+      const shouldUseRegularType = isRegularReceiptItem({ type: originalType });
+      const type = shouldUseRegularType ? receiptType : originalType;
+      const originalLabel = item.label || RECEIPT_TYPES[originalType] || "";
+      const shouldUseDefaultRegularLabel =
+        shouldUseRegularType && (!originalLabel || originalLabel === "月謝" || originalLabel === "チケット制レッスン費");
+      return {
+        id: item.id || uid("receipt"),
+        type,
+        label: shouldUseDefaultRegularLabel ? receiptLabel : originalLabel || RECEIPT_TYPES[type] || "その他",
+        targetMonth: item.targetMonth || monthKey(),
+        amount: Number(item.amount || 0),
+        receiptDate: item.receiptDate || "",
+        memo: item.memo || "",
+        required: type === "leave" || isDeletedReceiptType(type) ? false : item.required !== false,
+      };
+    })
     .filter((item) => !isDefaultPendingRecital(item))
     .filter((item) => activeMonths.has(item.targetMonth) || item.targetMonth >= currentMonth);
 
-  const monthSet = new Set(normalized.filter((item) => item.type === "monthly").map((item) => item.targetMonth));
-  const hiddenMonthlySet = new Set(normalized.filter((item) => item.type === "deleted-monthly").map((item) => item.targetMonth));
+  const monthSet = new Set(normalized.filter((item) => item.type === receiptType).map((item) => item.targetMonth));
+  const hiddenMonthlySet = new Set(
+    normalized
+      .filter((item) => item.type === `deleted-${receiptType}` || (receiptType === "ticketLesson" && item.type === "deleted-monthly"))
+      .map((item) => item.targetMonth),
+  );
   const deletedTypes = new Set(normalized.filter((item) => isDeletedReceiptType(item.type)).map((item) => item.type.replace("deleted-", "")));
   const missingMonthly = lastTwelveMonths()
     .filter((month) => !monthSet.has(month) && !hiddenMonthlySet.has(month))
     .map((month) => ({
       id: uid("receipt"),
-      type: "monthly",
-      label: "月謝",
+      type: receiptType,
+      label: receiptLabel,
       targetMonth: month,
       amount: Number(student.fee || 0),
-      receiptDate: student.receiptChecked && month === monthKey() ? student.receiptDate || today() : "",
-      memo: student.receiptChecked && month === monthKey() ? student.receiptMemo || "" : "",
+      receiptDate: "",
+      memo: "",
       required: true,
     }));
 
@@ -313,7 +342,7 @@ function normalizeReceiptItems(student) {
 }
 
 function sortReceiptItems(items) {
-  const typeOrder = { leave: 0, monthly: 1, facility: 2, live: 3, recital: 4, other: 5 };
+  const typeOrder = { leave: 0, monthly: 1, ticketLesson: 2, facility: 3, live: 4, recital: 5, other: 6 };
   return [...items].sort((a, b) => {
     if (a.targetMonth !== b.targetMonth) return b.targetMonth.localeCompare(a.targetMonth);
     return (typeOrder[a.type] || 9) - (typeOrder[b.type] || 9);
@@ -321,7 +350,7 @@ function sortReceiptItems(items) {
 }
 
 function currentMonthlyReceipt(student) {
-  return student.receiptItems.find((item) => item.type === "monthly" && item.targetMonth === monthKey());
+  return student.receiptItems.find((item) => item.type === regularReceiptType(student) && item.targetMonth === monthKey());
 }
 
 function leaveItemForMonth(student, targetMonth = monthKey()) {
@@ -331,7 +360,7 @@ function leaveItemForMonth(student, targetMonth = monthKey()) {
 function receiptSummary(student) {
   const items = student.receiptItems || [];
   const leaveMonths = new Set(items.filter((item) => item.type === "leave").map((item) => item.targetMonth));
-  const requiredItems = items.filter((item) => item.required !== false && !(item.type === "monthly" && leaveMonths.has(item.targetMonth)));
+  const requiredItems = items.filter((item) => item.required !== false && !(isRegularReceiptItem(item) && leaveMonths.has(item.targetMonth)));
   const paidItems = requiredItems.filter((item) => item.receiptDate);
   const unpaidItems = requiredItems.filter((item) => !item.receiptDate);
   const latest = [...paidItems].sort((a, b) => b.receiptDate.localeCompare(a.receiptDate))[0];
@@ -628,12 +657,19 @@ function teacherTemplate() {
   const regularMonthly = regularMonthlyStudents.reduce((sum, student) => sum + Number(student.fee || 0), 0);
   const ticketTotal = ticketStudents.reduce((sum, student) => sum + Number(student.fee || 0), 0);
   const totalUnpaidItems = state.students.reduce((sum, student) => sum + receiptSummary(student).unpaidItems.length, 0);
+  const unpaidItemStudents = state.students.filter((student) => receiptSummary(student).unpaidItems.length > 0);
   const filtered = state.students.filter((student) => {
     if (cardFilter === "monthly-unpaid" && !unpaidMonthlyStudents.some((item) => item.id === student.id)) return false;
+    if (cardFilter === "unpaid-items" && !unpaidItemStudents.some((item) => item.id === student.id)) return false;
     const haystack = `${student.name} ${student.grade} ${student.lessonDay} ${getCourse(student.courseId).name}`.toLowerCase();
     return haystack.includes(searchTerm.toLowerCase());
   });
-  const filterLabel = cardFilter === "monthly-unpaid" ? "今月月謝が未確認の生徒さんを表示中" : "";
+  const filterLabel =
+    cardFilter === "monthly-unpaid"
+      ? "今月月謝が未確認の生徒さんを表示中"
+      : cardFilter === "unpaid-items"
+        ? "未領収項目がある生徒さんを表示中"
+        : "";
 
   return shell(
     `
@@ -674,7 +710,7 @@ function teacherTemplate() {
           <div class="stat"><span class="subtle">レギュラー月謝 合計</span><strong>${yen(regularMonthly)}</strong></div>
           <div class="stat"><span class="subtle">チケット費 合計</span><strong>${yen(ticketTotal)}</strong></div>
           <button class="stat stat-button" id="showMonthlyUnpaid" type="button"><span class="subtle">今月月謝 未確認</span><strong>${unpaid}</strong><small>押すと該当者を表示</small></button>
-          <div class="stat"><span class="subtle">未領収項目</span><strong>${totalUnpaidItems}</strong></div>
+          <button class="stat stat-button" id="showUnpaidItems" type="button"><span class="subtle">未領収項目</span><strong>${totalUnpaidItems}</strong><small>押すと該当者を表示</small></button>
         </div>
         <section class="panel">
           <div class="panel-head">
@@ -682,7 +718,7 @@ function teacherTemplate() {
               <h2>生徒カード</h2>
               <p class="subtle">${filterLabel || "レッスン予定と領収状況を一覧で確認できます"}</p>
             </div>
-            ${cardFilter === "monthly-unpaid" ? `<button class="btn secondary" id="clearCardFilter" type="button">全員表示に戻す</button>` : ""}
+            ${cardFilter !== "all" ? `<button class="btn secondary" id="clearCardFilter" type="button">全員表示に戻す</button>` : ""}
           </div>
           <div class="student-grid">
             ${filtered.map(studentCardTemplate).join("") || `<p class="subtle">該当する生徒がいません。</p>`}
@@ -702,6 +738,22 @@ function studentCardTemplate(student) {
   const currentReceipt = currentMonthlyReceipt(student);
   const currentLeave = leaveItemForMonth(student);
   const summary = receiptSummary(student);
+  const isTicket = isTicketCourse(student.courseId);
+  const receiptStatusLabel = isTicket
+    ? currentReceipt?.receiptDate
+      ? "現チケット領収済み"
+      : "現チケット未確認"
+    : currentReceipt?.receiptDate
+      ? "今月領収済み"
+      : "今月未確認";
+  const receiptMetaLabel = isTicket ? "現チケット" : "今月月謝";
+  const quickReceiptLabel = isTicket
+    ? currentReceipt?.receiptDate
+      ? "領収日更新"
+      : "現チケットを領収"
+    : currentReceipt?.receiptDate
+      ? "領収日更新"
+      : "今月月謝を領収";
   return `
     <article class="student-card" data-student-card="${student.id}">
       <div class="card-head">
@@ -710,13 +762,13 @@ function studentCardTemplate(student) {
           <p class="subtle">${escapeHtml(student.grade)} / ${escapeHtml(course.name)}</p>
         </div>
         <span class="badge ${currentLeave || currentReceipt?.receiptDate ? "" : "warn"}">${
-          currentLeave ? "今月休会中" : currentReceipt?.receiptDate ? "今月領収済み" : "今月未確認"
+          currentLeave ? "今月休会中" : receiptStatusLabel
         }</span>
       </div>
       <div class="meta">
         <div><span>レッスン</span>${escapeHtml(student.lessonDay)}曜 ${escapeHtml(student.startTime)}</div>
         <div><span>レッスン費</span>${yen(student.fee)}</div>
-        <div><span>今月月謝</span>${currentLeave ? "休会中" : currentReceipt?.receiptDate ? currentReceipt.receiptDate : "未領収"}</div>
+        <div><span>${receiptMetaLabel}</span>${currentLeave ? "休会中" : currentReceipt?.receiptDate ? currentReceipt.receiptDate : "未領収"}</div>
         <div><span>直近領収</span>${summary.latest ? `${summary.latest.receiptDate} ${escapeHtml(summary.latest.label)}` : "なし"}</div>
         <div><span>未領収項目</span>${summary.unpaidItems.length}件</div>
         <div><span>講師メモ</span>${escapeHtml(student.teacherMemo || "なし")}</div>
@@ -725,7 +777,7 @@ function studentCardTemplate(student) {
         ${
           currentLeave
             ? `<button class="btn secondary" type="button" disabled>休会中</button>`
-            : `<button class="btn" data-quick-receipt="${student.id}">${currentReceipt?.receiptDate ? "領収日更新" : "今月月謝を領収"}</button>`
+            : `<button class="btn" data-quick-receipt="${student.id}">${quickReceiptLabel}</button>`
         }
         <button class="btn secondary" data-receipts="${student.id}">入金履歴</button>
         <button class="btn secondary" data-edit="${student.id}">編集</button>
@@ -811,9 +863,15 @@ function receiptRowTemplate(item) {
   const isLeave = item.type === "leave";
   return `
     <div class="receipt-row ${isLeave ? "leave" : paid ? "paid" : "unpaid"}" data-receipt-row="${item.id}">
-      <div>
-        <strong>${escapeHtml(item.label || RECEIPT_TYPES[item.type] || "その他")}</strong>
-        <span>${formatMonth(item.targetMonth)} / ${isLeave ? "月謝不要" : yen(item.amount)}</span>
+      <div class="receipt-item-fields">
+        <label>
+          <span>項目</span>
+          <input data-receipt-label="${item.id}" value="${escapeHtml(item.label || RECEIPT_TYPES[item.type] || "その他")}" />
+        </label>
+        <label>
+          <span>${formatMonth(item.targetMonth)}</span>
+          <input data-receipt-amount="${item.id}" type="number" min="0" step="100" value="${Number(item.amount || 0)}" ${isLeave ? "disabled" : ""} />
+        </label>
       </div>
       ${
         isLeave
@@ -940,6 +998,10 @@ function bindTeacher() {
     cardFilter = "monthly-unpaid";
     render();
   });
+  document.querySelector("#showUnpaidItems").addEventListener("click", () => {
+    cardFilter = "unpaid-items";
+    render();
+  });
   document.querySelector("#clearCardFilter")?.addEventListener("click", () => {
     cardFilter = "all";
     render();
@@ -991,12 +1053,12 @@ function bindTeacher() {
       const receipt = currentMonthlyReceipt(student);
       if (!receipt) return;
       receipt.receiptDate = today();
-      receipt.memo = receipt.memo || "月謝を領収";
+      receipt.memo = receipt.memo || (isTicketCourse(student.courseId) ? "チケット制レッスン費を領収" : "月謝を領収");
       student.receiptChecked = true;
       student.receiptDate = receipt.receiptDate;
       student.receiptMemo = receipt.memo;
       student.updatedAt = new Date().toISOString();
-      await saveState("今月月謝を領収しました");
+      await saveState(isTicketCourse(student.courseId) ? "チケット制レッスン費を領収しました" : "今月月謝を領収しました");
     });
   });
 
@@ -1054,6 +1116,8 @@ function bindReceiptModal() {
         id,
         {
           receiptDate: dateInput ? dateInput.value : "",
+          label: overlay.querySelector(`[data-receipt-label="${id}"]`).value.trim() || "その他",
+          amount: Number(overlay.querySelector(`[data-receipt-amount="${id}"]`)?.value || 0),
           memo: overlay.querySelector(`[data-receipt-memo="${id}"]`).value.trim(),
         },
         "入金履歴を保存しました",
@@ -1083,7 +1147,7 @@ function bindReceiptModal() {
       const student = getStudent(receiptStudentId);
       const item = student.receiptItems.find((receipt) => receipt.id === button.dataset.deleteReceipt);
       student.receiptItems = student.receiptItems.filter((receipt) => receipt.id !== button.dataset.deleteReceipt);
-      if (item?.type === "monthly" || item?.type === "facility" || item?.type === "live" || item?.type === "recital") {
+      if (item?.type === "monthly" || item?.type === "ticketLesson" || item?.type === "facility" || item?.type === "live" || item?.type === "recital") {
         student.receiptItems.push({
           id: uid("receipt"),
           type: `deleted-${item.type}`,
