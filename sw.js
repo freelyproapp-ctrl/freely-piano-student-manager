@@ -1,4 +1,4 @@
-const CACHE_NAME = "piano-studio-manager-v13";
+const CACHE_NAME = "piano-studio-manager-v14";
 const ASSETS = ["./", "./index.html", "./styles.css", "./app.js", "./config.js", "./manifest.webmanifest", "./icon.svg"];
 
 self.addEventListener("install", (event) => {

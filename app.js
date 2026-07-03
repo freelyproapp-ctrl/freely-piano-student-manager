@@ -61,6 +61,7 @@ let isReceiptModalOpen = false;
 let isLoading = false;
 let loadingMessage = "起動しています";
 let syncMessage = cloudEnabled ? "クラウド保存を準備中です" : "デモ保存中です";
+let supabaseReadyPromise = null;
 
 function uid(prefix = "id") {
   return `${prefix}-${Math.random().toString(36).slice(2, 9)}-${Date.now().toString(36)}`;
@@ -398,7 +399,24 @@ async function boot() {
 
   if (cloudEnabled) {
     try {
-      const createClient = await withTimeout(loadSupabaseCreateClient(), 5000, "Supabaseライブラリの読み込みに時間がかかっています");
+      await prepareSupabase();
+    } catch (error) {
+      console.error(error);
+      syncMessage = "クラウド接続を準備中です。ログイン時に再接続します";
+    }
+  } else {
+    syncMessage = "Supabase未設定のため、この端末だけのデモ保存です";
+  }
+
+  render();
+}
+
+async function prepareSupabase() {
+  if (!cloudEnabled) return null;
+  if (supabase) return supabase;
+  if (!supabaseReadyPromise) {
+    supabaseReadyPromise = (async () => {
+      const createClient = await withTimeout(loadSupabaseCreateClient(), 15000, "Supabaseライブラリの読み込みに時間がかかっています");
       supabase = createClient(config.supabaseUrl, config.supabaseAnonKey);
       const { data } = await supabase.auth.getSession();
       authUser = data.session && data.session.user ? data.session.user : null;
@@ -408,15 +426,14 @@ async function boot() {
         subscribeToCloudChanges();
       }
       syncMessage = authUser ? "クラウド保存中です" : "クラウドログイン待ちです";
-    } catch (error) {
-      console.error(error);
-      syncMessage = "クラウド接続に失敗しました。デモ保存で表示しています";
-    }
-  } else {
-    syncMessage = "Supabase未設定のため、この端末だけのデモ保存です";
+      render();
+      return supabase;
+    })().catch((error) => {
+      supabaseReadyPromise = null;
+      throw error;
+    });
   }
-
-  render();
+  return supabaseReadyPromise;
 }
 
 function withTimeout(promise, timeoutMs, message) {
@@ -1009,38 +1026,53 @@ function bindLogin() {
     const loginId = data.get("loginId").trim();
     const password = data.get("password").trim();
     const error = document.querySelector("#loginError");
+    const submitButton = event.currentTarget.querySelector("button[type='submit']");
+    if (submitButton) submitButton.disabled = true;
 
-    if (cloudEnabled && !supabase) {
-      error.textContent = "クラウド接続を準備中です。数秒後にもう一度ログインしてください。";
-      error.classList.add("show");
-      return;
-    }
-
-    if (cloudEnabled && supabase) {
-      const { data: loginData, error: loginError } = await supabase.auth.signInWithPassword({
-        email: loginId,
-        password,
-      });
-      if (loginError) {
+    try {
+      if (cloudEnabled && !supabase) {
+        error.textContent = "クラウド接続中です。このまま少しお待ちください。";
         error.classList.add("show");
+        try {
+          await prepareSupabase();
+        } catch (connectError) {
+          console.error(connectError);
+          error.textContent = "クラウド接続に失敗しました。通信状態を確認して、もう一度お試しください。";
+          error.classList.add("show");
+          return;
+        }
+      }
+
+      if (cloudEnabled && supabase) {
+        const { data: loginData, error: loginError } = await supabase.auth.signInWithPassword({
+          email: loginId,
+          password,
+        });
+        if (loginError) {
+          error.textContent = "ログイン情報が違います。";
+          error.classList.add("show");
+          return;
+        }
+        authUser = loginData.user;
+        session = { role: "teacher", mode: "cloud" };
+        sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
+        await loadCloudState();
+        subscribeToCloudChanges();
+        syncMessage = "クラウド保存中です";
+        render();
         return;
       }
-      authUser = loginData.user;
-      session = { role: "teacher", mode: "cloud" };
-      sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
-      await loadCloudState();
-      subscribeToCloudChanges();
-      syncMessage = "クラウド保存中です";
-      render();
-      return;
-    }
 
-    if (loginId === state.teacher.id && password === state.teacher.password) {
-      setSession({ role: "teacher", mode: "local" });
-      return;
-    }
+      if (loginId === state.teacher.id && password === state.teacher.password) {
+        setSession({ role: "teacher", mode: "local" });
+        return;
+      }
 
-    error.classList.add("show");
+      error.textContent = "ログイン情報が違います。";
+      error.classList.add("show");
+    } finally {
+      if (submitButton) submitButton.disabled = false;
+    }
   });
 }
 
