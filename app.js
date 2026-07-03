@@ -416,7 +416,7 @@ async function prepareSupabase() {
   if (supabase) return supabase;
   if (!supabaseReadyPromise) {
     supabaseReadyPromise = (async () => {
-      const createClient = await withTimeout(loadSupabaseCreateClient(), 15000, "Supabaseライブラリの読み込みに時間がかかっています");
+      const createClient = await withTimeout(loadSupabaseCreateClient(), 30000, "Supabaseライブラリの読み込みに時間がかかっています");
       supabase = createClient(config.supabaseUrl, config.supabaseAnonKey);
       const { data } = await supabase.auth.getSession();
       authUser = data.session && data.session.user ? data.session.user : null;
@@ -446,19 +446,32 @@ function withTimeout(promise, timeoutMs, message) {
 }
 
 function loadSupabaseCreateClient() {
+  if (window.supabase && window.supabase.createClient) return Promise.resolve(window.supabase.createClient);
+  const urls = [
+    "https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.min.js",
+    "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js",
+  ];
+  return urls.reduce((chain, url) => {
+    return chain.catch(() => loadScript(url));
+  }, Promise.reject()).then(() => {
+    if (window.supabase && window.supabase.createClient) return window.supabase.createClient;
+    throw new Error("Supabaseライブラリを読み込めませんでした");
+  });
+}
+
+function loadScript(src) {
   return new Promise((resolve, reject) => {
-    if (window.supabase && window.supabase.createClient) {
-      resolve(window.supabase.createClient);
+    const existing = document.querySelector(`script[src="${src}"]`);
+    if (existing) {
+      existing.addEventListener("load", resolve);
+      existing.addEventListener("error", reject);
       return;
     }
     const script = document.createElement("script");
-    script.src = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js";
+    script.src = src;
     script.async = true;
-    script.onload = () => {
-      if (window.supabase && window.supabase.createClient) resolve(window.supabase.createClient);
-      else reject(new Error("Supabaseライブラリを読み込めませんでした"));
-    };
-    script.onerror = () => reject(new Error("Supabaseライブラリを読み込めませんでした"));
+    script.onload = resolve;
+    script.onerror = reject;
     document.head.appendChild(script);
   });
 }
@@ -697,7 +710,7 @@ function loginTemplate() {
           <div class="error" id="loginError">ログイン情報が違います。</div>
           <button class="btn" type="submit">ログイン</button>
           <p class="hint">${
-            isCloud ? "Supabaseで登録した講師メールでログインします。" : isCloudPreparing ? "クラウド接続を準備中です。数秒後にログインしてください。" : "デモ: teacher / admin123。Supabase設定後はスマホでもクラウド保存できます。"
+            isCloud ? "Supabaseで登録した講師メールでログインします。" : isCloudPreparing ? "クラウド接続を準備中です。ログインを押すと接続を再試行します。" : "デモ: teacher / admin123。Supabase設定後はスマホでもクラウド保存できます。"
           }</p>
         </form>
       </div>
