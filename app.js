@@ -58,7 +58,7 @@ let cardFilter = "all";
 let editingStudentId = null;
 let receiptStudentId = null;
 let isReceiptModalOpen = false;
-let isLoading = true;
+let isLoading = false;
 let loadingMessage = "起動しています";
 let syncMessage = cloudEnabled ? "クラウド保存を準備中です" : "デモ保存中です";
 
@@ -391,12 +391,14 @@ async function boot() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     syncMessage = "保存データの読み込みに失敗したため、初期状態で表示しています";
   }
+  isLoading = false;
+  syncMessage = cloudEnabled ? "クラウド接続を準備中です" : "Supabase未設定のため、この端末だけのデモ保存です";
   render();
   registerServiceWorker();
 
   if (cloudEnabled) {
     try {
-      const createClient = await withTimeout(loadSupabaseCreateClient(), 8000, "Supabaseライブラリの読み込みに時間がかかっています");
+      const createClient = await withTimeout(loadSupabaseCreateClient(), 5000, "Supabaseライブラリの読み込みに時間がかかっています");
       supabase = createClient(config.supabaseUrl, config.supabaseAnonKey);
       const { data } = await supabase.auth.getSession();
       authUser = data.session && data.session.user ? data.session.user : null;
@@ -414,7 +416,6 @@ async function boot() {
     syncMessage = "Supabase未設定のため、この端末だけのデモ保存です";
   }
 
-  isLoading = false;
   render();
 }
 
@@ -662,22 +663,25 @@ function shell(inner, actions = "") {
 
 function loginTemplate() {
   const isCloud = cloudEnabled && supabase;
+  const isCloudPreparing = cloudEnabled && !supabase;
   return shell(`
     <section class="login-wrap">
       <div class="login-card">
         <h2>講師ログイン</h2>
         <form class="form" id="loginForm">
           <label class="field">
-            <span>${isCloud ? "メールアドレス" : "ログインID"}</span>
-            <input name="loginId" autocomplete="username" value="${isCloud ? "" : "teacher"}" />
+            <span>${cloudEnabled ? "メールアドレス" : "ログインID"}</span>
+            <input name="loginId" autocomplete="username" value="${cloudEnabled ? "" : "teacher"}" />
           </label>
           <label class="field">
             <span>パスワード</span>
-            <input name="password" type="password" autocomplete="current-password" value="${isCloud ? "" : "admin123"}" />
+            <input name="password" type="password" autocomplete="current-password" value="${cloudEnabled ? "" : "admin123"}" />
           </label>
           <div class="error" id="loginError">ログイン情報が違います。</div>
           <button class="btn" type="submit">ログイン</button>
-          <p class="hint">${isCloud ? "Supabaseで登録した講師メールでログインします。" : "デモ: teacher / admin123。Supabase設定後はスマホでもクラウド保存できます。"}</p>
+          <p class="hint">${
+            isCloud ? "Supabaseで登録した講師メールでログインします。" : isCloudPreparing ? "クラウド接続を準備中です。数秒後にログインしてください。" : "デモ: teacher / admin123。Supabase設定後はスマホでもクラウド保存できます。"
+          }</p>
         </form>
       </div>
     </section>
@@ -1005,6 +1009,12 @@ function bindLogin() {
     const loginId = data.get("loginId").trim();
     const password = data.get("password").trim();
     const error = document.querySelector("#loginError");
+
+    if (cloudEnabled && !supabase) {
+      error.textContent = "クラウド接続を準備中です。数秒後にもう一度ログインしてください。";
+      error.classList.add("show");
+      return;
+    }
 
     if (cloudEnabled && supabase) {
       const { data: loginData, error: loginError } = await supabase.auth.signInWithPassword({
