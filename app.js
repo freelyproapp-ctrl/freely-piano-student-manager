@@ -51,7 +51,7 @@ const cloudEnabled = Boolean(config.supabaseUrl && config.supabaseAnonKey);
 
 let state = createDefaultState();
 let session = loadLocalSession();
-let supabase = null;
+let supabaseClient = null;
 let authUser = null;
 let searchTerm = "";
 let cardFilter = "all";
@@ -413,12 +413,12 @@ async function boot() {
 
 async function prepareSupabase() {
   if (!cloudEnabled) return null;
-  if (supabase) return supabase;
+  if (supabaseClient) return supabaseClient;
   if (!supabaseReadyPromise) {
     supabaseReadyPromise = (async () => {
       const createClient = await withTimeout(loadSupabaseCreateClient(), 30000, "Supabaseライブラリの読み込みに時間がかかっています");
-      supabase = createClient(config.supabaseUrl, config.supabaseAnonKey);
-      const { data } = await supabase.auth.getSession();
+      supabaseClient = createClient(config.supabaseUrl, config.supabaseAnonKey);
+      const { data } = await supabaseClient.auth.getSession();
       authUser = data.session && data.session.user ? data.session.user : null;
       session = authUser ? { role: "teacher", mode: "cloud" } : null;
       if (authUser) {
@@ -427,7 +427,7 @@ async function prepareSupabase() {
       }
       syncMessage = authUser ? "クラウド保存中です" : "クラウドログイン待ちです";
       render();
-      return supabase;
+      return supabaseClient;
     })().catch((error) => {
       supabaseReadyPromise = null;
       throw error;
@@ -571,9 +571,9 @@ async function loadCloudState() {
 
   const [{ data: settings, error: settingsError }, { data: courses, error: coursesError }, { data: students, error: studentsError }] =
     await Promise.all([
-      supabase.from("app_settings").select("*").eq("user_id", authUser.id).maybeSingle(),
-      supabase.from("courses").select("*").eq("user_id", authUser.id).order("order_index", { ascending: true }),
-      supabase.from("students").select("*").eq("user_id", authUser.id).order("order_index", { ascending: true }),
+      supabaseClient.from("app_settings").select("*").eq("user_id", authUser.id).maybeSingle(),
+      supabaseClient.from("courses").select("*").eq("user_id", authUser.id).order("order_index", { ascending: true }),
+      supabaseClient.from("students").select("*").eq("user_id", authUser.id).order("order_index", { ascending: true }),
     ]);
 
   if (settingsError || coursesError || studentsError) {
@@ -596,20 +596,20 @@ async function loadCloudState() {
 
 async function seedCloudState() {
   const initial = loadLocalState();
-  await supabase.from("app_settings").upsert({
+  await supabaseClient.from("app_settings").upsert({
     user_id: authUser.id,
     studio_name: initial.studioName || DEFAULT_STUDIO_NAME,
     updated_at: new Date().toISOString(),
   });
-  await supabase.from("courses").upsert(initial.courses.map(toDbCourse));
-  await supabase.from("students").upsert(initial.students.map(toDbStudent));
+  await supabaseClient.from("courses").upsert(initial.courses.map(toDbCourse));
+  await supabaseClient.from("students").upsert(initial.students.map(toDbStudent));
 }
 
 async function saveState(message = "保存しました") {
   state.updatedAt = new Date().toISOString();
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 
-  if (cloudEnabled && supabase && authUser) {
+  if (cloudEnabled && supabaseClient && authUser) {
     try {
       syncMessage = "クラウドへ保存中です";
       render();
@@ -627,20 +627,20 @@ async function saveState(message = "保存しました") {
 }
 
 async function saveCloudState() {
-  await supabase.from("app_settings").upsert({
+  await supabaseClient.from("app_settings").upsert({
     user_id: authUser.id,
     studio_name: state.studioName || DEFAULT_STUDIO_NAME,
     updated_at: state.updatedAt,
   });
 
-  await supabase.from("courses").delete().eq("user_id", authUser.id);
-  await supabase.from("students").delete().eq("user_id", authUser.id);
-  await supabase.from("courses").insert(state.courses.map(toDbCourse));
-  await supabase.from("students").insert(state.students.map(toDbStudent));
+  await supabaseClient.from("courses").delete().eq("user_id", authUser.id);
+  await supabaseClient.from("students").delete().eq("user_id", authUser.id);
+  await supabaseClient.from("courses").insert(state.courses.map(toDbCourse));
+  await supabaseClient.from("students").insert(state.students.map(toDbStudent));
 }
 
 function subscribeToCloudChanges() {
-  supabase
+  supabaseClient
     .channel("piano-studio-data")
     .on("postgres_changes", { event: "*", schema: "public", table: "students", filter: `user_id=eq.${authUser.id}` }, refreshCloudQuietly)
     .on("postgres_changes", { event: "*", schema: "public", table: "courses", filter: `user_id=eq.${authUser.id}` }, refreshCloudQuietly)
@@ -693,8 +693,8 @@ function shell(inner, actions = "") {
 }
 
 function loginTemplate() {
-  const isCloud = cloudEnabled && supabase;
-  const isCloudPreparing = cloudEnabled && !supabase;
+  const isCloud = cloudEnabled && supabaseClient;
+  const isCloudPreparing = cloudEnabled && !supabaseClient;
   return shell(`
     <section class="login-wrap">
       <div class="login-card">
@@ -1044,7 +1044,7 @@ function bindLogin() {
     if (submitButton) submitButton.disabled = true;
 
     try {
-      if (cloudEnabled && !supabase) {
+      if (cloudEnabled && !supabaseClient) {
         error.textContent = "クラウド接続中です。このまま少しお待ちください。";
         error.classList.add("show");
         try {
@@ -1057,8 +1057,8 @@ function bindLogin() {
         }
       }
 
-      if (cloudEnabled && supabase) {
-        const { data: loginData, error: loginError } = await supabase.auth.signInWithPassword({
+      if (cloudEnabled && supabaseClient) {
+        const { data: loginData, error: loginError } = await supabaseClient.auth.signInWithPassword({
           email: loginId,
           password,
         });
@@ -1132,8 +1132,8 @@ function bindTeacher() {
       alert("確認用パスワードが一致しません。");
       return;
     }
-    if (cloudEnabled && supabase && authUser) {
-      const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (cloudEnabled && supabaseClient && authUser) {
+      const { error } = await supabaseClient.auth.updateUser({ password: newPassword });
       if (error) {
         alert("パスワード変更に失敗しました。もう一度お試しください。");
         return;
@@ -1184,7 +1184,7 @@ function bindTeacher() {
 }
 
 async function logout() {
-  if (cloudEnabled && supabase) await supabase.auth.signOut();
+  if (cloudEnabled && supabaseClient) await supabaseClient.auth.signOut();
   authUser = null;
   setSession(null);
 }
