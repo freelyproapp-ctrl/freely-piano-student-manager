@@ -1,5 +1,5 @@
-const CACHE_NAME = "piano-studio-manager-v15";
-const ASSETS = ["./", "./index.html", "./styles.css", "./app.js", "./config.js", "./manifest.webmanifest", "./icon.svg"];
+const CACHE_NAME = "piano-studio-manager-v16";
+const ASSETS = ["./", "./index.html", "./styles.css", "./app.js", "./config.js", "./supabase.js", "./manifest.webmanifest", "./icon.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)));

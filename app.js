@@ -448,6 +448,7 @@ function withTimeout(promise, timeoutMs, message) {
 function loadSupabaseCreateClient() {
   if (window.supabase && window.supabase.createClient) return Promise.resolve(window.supabase.createClient);
   const urls = [
+    "./supabase.js",
     "https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.min.js",
     "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js",
   ];
