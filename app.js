@@ -380,12 +380,24 @@ function setSession(next) {
 }
 
 async function boot() {
-  state = loadLocalState();
+  try {
+    state = loadLocalState();
+  } catch (error) {
+    console.error(error);
+    state = createDefaultState();
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    syncMessage = "保存データの読み込みに失敗したため、初期状態で表示しています";
+  }
+  render();
   registerServiceWorker();
 
   if (cloudEnabled) {
     try {
-      const { createClient } = await import("https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm");
+      const { createClient } = await withTimeout(
+        import("https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm"),
+        8000,
+        "Supabaseライブラリの読み込みに時間がかかっています",
+      );
       supabase = createClient(config.supabaseUrl, config.supabaseAnonKey);
       const { data } = await supabase.auth.getSession();
       authUser = data.session?.user || null;
@@ -405,6 +417,15 @@ async function boot() {
 
   isLoading = false;
   render();
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    }),
+  ]);
 }
 
 function registerServiceWorker() {
@@ -1347,4 +1368,16 @@ channel?.addEventListener("message", (event) => {
   render();
 });
 
-boot();
+boot().catch((error) => {
+  console.error(error);
+  isLoading = false;
+  syncMessage = "起動中にエラーが発生しました。再読み込みしてください";
+  app.innerHTML = shell(`
+    <section class="login-wrap">
+      <div class="login-card">
+        <h2>起動に失敗しました</h2>
+        <p class="hint">ページを再読み込みしてください。改善しない場合は、少し時間をおいてもう一度開いてください。</p>
+      </div>
+    </section>
+  `);
+});
