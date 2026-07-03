@@ -103,27 +103,30 @@ function yen(value) {
 }
 
 function isVisitCourse(courseId, courses = COURSE_PRESETS) {
-  return courses.find((course) => course.id === courseId)?.name.includes("出張");
+  const course = courses.find((item) => item.id === courseId);
+  return Boolean(course && course.name.includes("出張"));
 }
 
-function isTicketCourse(courseId) {
-  return getCourse(courseId)?.name.includes("チケット");
+function isTicketCourse(courseId, courses) {
+  const course = courses ? courses.find((item) => item.id === courseId) : getCourse(courseId);
+  return Boolean(course && course.name.includes("チケット"));
 }
 
 function isFaceToFaceMonthlyCourse(courseId) {
-  return getCourse(courseId)?.name.includes("レギュラー月謝");
+  const course = getCourse(courseId);
+  return Boolean(course && course.name.includes("レギュラー月謝"));
 }
 
 function normalizeCourseName(name) {
   return String(name || "").replace("対面月謝", "レギュラー月謝");
 }
 
-function regularReceiptType(student) {
-  return isTicketCourse(student.courseId) ? "ticketLesson" : "monthly";
+function regularReceiptType(student, courses) {
+  return isTicketCourse(student.courseId, courses) ? "ticketLesson" : "monthly";
 }
 
-function regularReceiptLabel(student) {
-  return isTicketCourse(student.courseId) ? "チケット制レッスン費" : "月謝";
+function regularReceiptLabel(student, courses) {
+  return isTicketCourse(student.courseId, courses) ? "チケット制レッスン費" : "月謝";
 }
 
 function isRegularReceiptItem(item) {
@@ -151,7 +154,7 @@ function createDefaultState() {
         receiptChecked: index % 3 === 0,
         receiptDate: index % 3 === 0 ? today() : "",
         receiptMemo: "",
-      }),
+      }, courses),
       studioNotice: "次回までに宿題の曲を片手ずつ確認してください。",
       teacherMemo: "",
       updatedAt: new Date().toISOString(),
@@ -195,19 +198,19 @@ function normalizeState(saved) {
     receiptMemo: student.receiptMemo || "",
     receiptItems: normalizeReceiptItems(student),
     studioNotice: student.studioNotice || "",
-    teacherMemo: student.teacherMemo ?? student.parentMemo ?? "",
+    teacherMemo: student.teacherMemo != null ? student.teacherMemo : student.parentMemo != null ? student.parentMemo : "",
     updatedAt: student.updatedAt || new Date().toISOString(),
   }));
   localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   return next;
 }
 
-function createReceiptItems(student) {
+function createReceiptItems(student, courses) {
   const currentYear = new Date().getFullYear();
   const months = lastTwelveMonths();
   const currentMonth = monthKey();
-  const receiptType = regularReceiptType(student);
-  const receiptLabel = regularReceiptLabel(student);
+  const receiptType = regularReceiptType(student, courses);
+  const receiptLabel = regularReceiptLabel(student, courses);
   const monthlyItems = months.map((month) => ({
     id: uid("receipt"),
     type: receiptType,
@@ -393,14 +396,10 @@ async function boot() {
 
   if (cloudEnabled) {
     try {
-      const { createClient } = await withTimeout(
-        import("https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm"),
-        8000,
-        "Supabaseライブラリの読み込みに時間がかかっています",
-      );
+      const createClient = await withTimeout(loadSupabaseCreateClient(), 8000, "Supabaseライブラリの読み込みに時間がかかっています");
       supabase = createClient(config.supabaseUrl, config.supabaseAnonKey);
       const { data } = await supabase.auth.getSession();
-      authUser = data.session?.user || null;
+      authUser = data.session && data.session.user ? data.session.user : null;
       session = authUser ? { role: "teacher", mode: "cloud" } : null;
       if (authUser) {
         await loadCloudState();
@@ -428,6 +427,24 @@ function withTimeout(promise, timeoutMs, message) {
   ]);
 }
 
+function loadSupabaseCreateClient() {
+  return new Promise((resolve, reject) => {
+    if (window.supabase && window.supabase.createClient) {
+      resolve(window.supabase.createClient);
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js";
+    script.async = true;
+    script.onload = () => {
+      if (window.supabase && window.supabase.createClient) resolve(window.supabase.createClient);
+      else reject(new Error("Supabaseライブラリを読み込めませんでした"));
+    };
+    script.onerror = () => reject(new Error("Supabaseライブラリを読み込めませんでした"));
+    document.head.appendChild(script);
+  });
+}
+
 function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
   navigator.serviceWorker.register("./sw.js").catch(() => {});
@@ -442,12 +459,12 @@ function getStudent(id) {
 }
 
 function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+  return String(value != null ? value : "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 function toDbCourse(course, orderIndex) {
@@ -572,7 +589,7 @@ async function saveState(message = "保存しました") {
     }
   }
 
-  channel?.postMessage({ type: "state", updatedAt: state.updatedAt });
+  if (channel) channel.postMessage({ type: "state", updatedAt: state.updatedAt });
   toast(message);
   render();
 }
@@ -671,10 +688,19 @@ function teacherTemplate() {
   const regularMonthlyStudents = state.students.filter((student) => isFaceToFaceMonthlyCourse(student.courseId));
   const ticketStudents = state.students.filter((student) => isTicketCourse(student.courseId));
   const activeMonthlyStudents = regularMonthlyStudents.filter((student) => !leaveItemForMonth(student));
-  const unpaidMonthlyStudents = activeMonthlyStudents.filter((student) => !currentMonthlyReceipt(student)?.receiptDate);
-  const regularPaid = activeMonthlyStudents.filter((student) => currentMonthlyReceipt(student)?.receiptDate).length;
+  const unpaidMonthlyStudents = activeMonthlyStudents.filter((student) => {
+    const receipt = currentMonthlyReceipt(student);
+    return !(receipt && receipt.receiptDate);
+  });
+  const regularPaid = activeMonthlyStudents.filter((student) => {
+    const receipt = currentMonthlyReceipt(student);
+    return Boolean(receipt && receipt.receiptDate);
+  }).length;
   const unpaid = unpaidMonthlyStudents.length;
-  const ticketPaid = ticketStudents.filter((student) => currentMonthlyReceipt(student)?.receiptDate).length;
+  const ticketPaid = ticketStudents.filter((student) => {
+    const receipt = currentMonthlyReceipt(student);
+    return Boolean(receipt && receipt.receiptDate);
+  }).length;
   const regularMonthly = regularMonthlyStudents.reduce((sum, student) => sum + Number(student.fee || 0), 0);
   const ticketTotal = ticketStudents.reduce((sum, student) => sum + Number(student.fee || 0), 0);
   const totalUnpaidItems = state.students.reduce((sum, student) => sum + receiptSummary(student).unpaidItems.length, 0);
@@ -760,19 +786,20 @@ function studentCardTemplate(student) {
   const currentLeave = leaveItemForMonth(student);
   const summary = receiptSummary(student);
   const isTicket = isTicketCourse(student.courseId);
+  const hasCurrentReceipt = Boolean(currentReceipt && currentReceipt.receiptDate);
   const receiptStatusLabel = isTicket
-    ? currentReceipt?.receiptDate
+    ? hasCurrentReceipt
       ? "現チケット領収済み"
       : "現チケット未確認"
-    : currentReceipt?.receiptDate
+    : hasCurrentReceipt
       ? "今月領収済み"
       : "今月未確認";
   const receiptMetaLabel = isTicket ? "現チケット" : "今月月謝";
   const quickReceiptLabel = isTicket
-    ? currentReceipt?.receiptDate
+    ? hasCurrentReceipt
       ? "領収日更新"
       : "現チケットを領収"
-    : currentReceipt?.receiptDate
+    : hasCurrentReceipt
       ? "領収日更新"
       : "今月月謝を領収";
   return `
@@ -782,14 +809,14 @@ function studentCardTemplate(student) {
           <button class="card-name name-button" data-edit="${student.id}" type="button">${escapeHtml(student.name)}</button>
           <p class="subtle">${escapeHtml(student.grade)} / ${escapeHtml(course.name)}</p>
         </div>
-        <span class="badge ${currentLeave || currentReceipt?.receiptDate ? "" : "warn"}">${
+        <span class="badge ${currentLeave || hasCurrentReceipt ? "" : "warn"}">${
           currentLeave ? "今月休会中" : receiptStatusLabel
         }</span>
       </div>
       <div class="meta">
         <div><span>レッスン</span>${escapeHtml(student.lessonDay)}曜 ${escapeHtml(student.startTime)}</div>
         <div><span>レッスン費</span>${yen(student.fee)}</div>
-        <div><span>${receiptMetaLabel}</span>${currentLeave ? "休会中" : currentReceipt?.receiptDate ? currentReceipt.receiptDate : "未領収"}</div>
+        <div><span>${receiptMetaLabel}</span>${currentLeave ? "休会中" : hasCurrentReceipt ? currentReceipt.receiptDate : "未領収"}</div>
         <div><span>直近領収</span>${summary.latest ? `${summary.latest.receiptDate} ${escapeHtml(summary.latest.label)}` : "なし"}</div>
         <div><span>未領収項目</span>${summary.unpaidItems.length}件</div>
         <div><span>講師メモ</span>${escapeHtml(student.teacherMemo || "なし")}</div>
@@ -1023,10 +1050,13 @@ function bindTeacher() {
     cardFilter = "unpaid-items";
     render();
   });
-  document.querySelector("#clearCardFilter")?.addEventListener("click", () => {
-    cardFilter = "all";
-    render();
-  });
+  const clearCardFilterButton = document.querySelector("#clearCardFilter");
+  if (clearCardFilterButton) {
+    clearCardFilterButton.addEventListener("click", () => {
+      cardFilter = "all";
+      render();
+    });
+  }
   document.querySelector("#studioForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -1138,7 +1168,7 @@ function bindReceiptModal() {
         {
           receiptDate: dateInput ? dateInput.value : "",
           label: overlay.querySelector(`[data-receipt-label="${id}"]`).value.trim() || "その他",
-          amount: Number(overlay.querySelector(`[data-receipt-amount="${id}"]`)?.value || 0),
+          amount: Number((overlay.querySelector(`[data-receipt-amount="${id}"]`) || {}).value || 0),
           memo: overlay.querySelector(`[data-receipt-memo="${id}"]`).value.trim(),
         },
         "入金履歴を保存しました",
@@ -1168,7 +1198,7 @@ function bindReceiptModal() {
       const student = getStudent(receiptStudentId);
       const item = student.receiptItems.find((receipt) => receipt.id === button.dataset.deleteReceipt);
       student.receiptItems = student.receiptItems.filter((receipt) => receipt.id !== button.dataset.deleteReceipt);
-      if (item?.type === "monthly" || item?.type === "ticketLesson" || item?.type === "facility" || item?.type === "live" || item?.type === "recital") {
+      if (item && (item.type === "monthly" || item.type === "ticketLesson" || item.type === "facility" || item.type === "live" || item.type === "recital")) {
         student.receiptItems.push({
           id: uid("receipt"),
           type: `deleted-${item.type}`,
@@ -1185,7 +1215,9 @@ function bindReceiptModal() {
     });
   });
 
-  overlay.querySelector("#addReceiptForm")?.addEventListener("submit", async (event) => {
+  const addReceiptForm = overlay.querySelector("#addReceiptForm");
+  if (!addReceiptForm) return;
+  addReceiptForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const student = getStudent(receiptStudentId);
     const data = new FormData(event.currentTarget);
@@ -1237,9 +1269,9 @@ async function updateReceiptItem(receiptId, updates, message) {
   const student = getStudent(receiptStudentId);
   student.receiptItems = student.receiptItems.map((item) => (item.id === receiptId ? { ...item, ...updates } : item));
   const current = currentMonthlyReceipt(student);
-  student.receiptChecked = Boolean(current?.receiptDate);
-  student.receiptDate = current?.receiptDate || "";
-  student.receiptMemo = current?.memo || "";
+  student.receiptChecked = Boolean(current && current.receiptDate);
+  student.receiptDate = current && current.receiptDate ? current.receiptDate : "";
+  student.receiptMemo = current && current.memo ? current.memo : "";
   student.updatedAt = new Date().toISOString();
   await saveState(message);
 }
@@ -1362,11 +1394,13 @@ window.addEventListener("storage", (event) => {
   render();
 });
 
-channel?.addEventListener("message", (event) => {
-  if (event.data?.type !== "state" || (cloudEnabled && authUser)) return;
-  state = loadLocalState();
-  render();
-});
+if (channel) {
+  channel.addEventListener("message", (event) => {
+    if (!event.data || event.data.type !== "state" || (cloudEnabled && authUser)) return;
+    state = loadLocalState();
+    render();
+  });
+}
 
 boot().catch((error) => {
   console.error(error);
