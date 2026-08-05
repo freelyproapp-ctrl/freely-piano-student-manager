@@ -706,7 +706,10 @@ function loginTemplate() {
           </label>
           <label class="field">
             <span>パスワード</span>
-            <input name="password" type="password" autocomplete="current-password" value="${cloudEnabled ? "" : "admin123"}" />
+            <div class="password-field">
+              <input name="password" type="password" autocomplete="current-password" value="${cloudEnabled ? "" : "admin123"}" />
+              <button class="password-toggle" type="button" data-toggle-password>表示</button>
+            </div>
           </label>
           <div class="error" id="loginError">ログイン情報が違います。</div>
           <button class="btn" type="submit">ログイン</button>
@@ -772,15 +775,21 @@ function teacherTemplate() {
         <form class="panel password-settings" id="passwordForm">
           <div>
             <h2>ログインパスワード変更</h2>
-            <p class="subtle">管理画面へログインするパスワードを変更できます</p>
+            <p class="subtle">現在のパスワードは安全のため表示できません。忘れた時はSupabaseから再設定できます。</p>
           </div>
           <label class="field">
             <span>新しいパスワード</span>
-            <input name="newPassword" type="password" autocomplete="new-password" minlength="6" />
+            <div class="password-field">
+              <input name="newPassword" type="password" autocomplete="new-password" minlength="6" />
+              <button class="password-toggle" type="button" data-toggle-password>表示</button>
+            </div>
           </label>
           <label class="field">
             <span>確認</span>
-            <input name="confirmPassword" type="password" autocomplete="new-password" minlength="6" />
+            <div class="password-field">
+              <input name="confirmPassword" type="password" autocomplete="new-password" minlength="6" />
+              <button class="password-toggle" type="button" data-toggle-password>表示</button>
+            </div>
           </label>
           <button class="btn secondary" type="submit">パスワードを変更</button>
         </form>
@@ -1034,6 +1043,7 @@ function emptyStudent() {
 }
 
 function bindLogin() {
+  bindPasswordToggles();
   document.querySelector("#loginForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -1090,8 +1100,21 @@ function bindLogin() {
   });
 }
 
+function bindPasswordToggles() {
+  document.querySelectorAll("[data-toggle-password]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const input = button.closest(".password-field")?.querySelector("input");
+      if (!input) return;
+      const shouldShow = input.type === "password";
+      input.type = shouldShow ? "text" : "password";
+      button.textContent = shouldShow ? "隠す" : "表示";
+    });
+  });
+}
+
 function bindTeacher() {
   document.querySelector("#logout").addEventListener("click", logout);
+  bindPasswordToggles();
   document.querySelector("#search").addEventListener("input", (event) => {
     searchTerm = event.target.value;
     render();
