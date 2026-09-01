@@ -62,6 +62,7 @@ let isLoading = false;
 let loadingMessage = "起動しています";
 let syncMessage = cloudEnabled ? "クラウド保存を準備中です" : "デモ保存中です";
 let supabaseReadyPromise = null;
+let authListenerReady = false;
 
 function uid(prefix = "id") {
   return `${prefix}-${Math.random().toString(36).slice(2, 9)}-${Date.now().toString(36)}`;
@@ -418,8 +419,9 @@ async function prepareSupabase() {
     supabaseReadyPromise = (async () => {
       const createClient = await withTimeout(loadSupabaseCreateClient(), 30000, "Supabaseライブラリの読み込みに時間がかかっています");
       supabaseClient = createClient(config.supabaseUrl, config.supabaseAnonKey);
-      const { data } = await supabaseClient.auth.getSession();
-      authUser = data.session && data.session.user ? data.session.user : null;
+      bindAuthListener();
+      const authSession = await restoreAuthSessionFromUrl();
+      authUser = authSession && authSession.user ? authSession.user : null;
       session = authUser ? { role: "teacher", mode: "cloud" } : null;
       if (authUser) {
         await loadCloudState();
@@ -434,6 +436,47 @@ async function prepareSupabase() {
     });
   }
   return supabaseReadyPromise;
+}
+
+function bindAuthListener() {
+  if (authListenerReady || !supabaseClient) return;
+  authListenerReady = true;
+  supabaseClient.auth.onAuthStateChange(async (event, data) => {
+    if (event !== "PASSWORD_RECOVERY" && event !== "SIGNED_IN") return;
+    authUser = data && data.session && data.session.user ? data.session.user : null;
+    if (!authUser) return;
+    session = { role: "teacher", mode: "cloud" };
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    syncMessage = event === "PASSWORD_RECOVERY" ? "パスワード再設定モードです" : "クラウド保存中です";
+    try {
+      await loadCloudState();
+      subscribeToCloudChanges();
+    } catch (error) {
+      console.error(error);
+    }
+    render();
+  });
+}
+
+async function restoreAuthSessionFromUrl() {
+  if (!supabaseClient) return null;
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const accessToken = hash.get("access_token");
+  const refreshToken = hash.get("refresh_token");
+  if (accessToken && refreshToken) {
+    const { data, error } = await supabaseClient.auth.setSession({
+      access_token: accessToken,
+      refresh_token: refreshToken,
+    });
+    if (error) throw error;
+    if (window.history && window.location.hash) {
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+    }
+    return data.session || null;
+  }
+  const { data, error } = await supabaseClient.auth.getSession();
+  if (error) throw error;
+  return data.session || null;
 }
 
 function withTimeout(promise, timeoutMs, message) {
@@ -1155,12 +1198,25 @@ function bindTeacher() {
       alert("確認用パスワードが一致しません。");
       return;
     }
+    if (cloudEnabled) {
+      try {
+        await prepareSupabase();
+        const authSession = await restoreAuthSessionFromUrl();
+        authUser = authSession && authSession.user ? authSession.user : authUser;
+      } catch (error) {
+        console.error(error);
+        alert("ログイン状態の確認に失敗しました。リセットメールのリンクから開き直してください。");
+        return;
+      }
+    }
     if (cloudEnabled && supabaseClient && authUser) {
       const { error } = await supabaseClient.auth.updateUser({ password: newPassword });
       if (error) {
-        alert("パスワード変更に失敗しました。もう一度お試しください。");
+        console.error(error);
+        alert(`パスワード変更に失敗しました。${error.message || "リセットメールのリンクから開き直してください。"}`);
         return;
       }
+      syncMessage = "パスワードを変更しました";
     } else {
       state.teacher.password = newPassword;
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
