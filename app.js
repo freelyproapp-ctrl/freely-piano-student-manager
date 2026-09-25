@@ -48,6 +48,7 @@ const app = document.querySelector("#app");
 const channel = "BroadcastChannel" in window ? new BroadcastChannel("piano-studio-sync") : null;
 const config = window.PIANO_APP_CONFIG || {};
 const cloudEnabled = Boolean(config.supabaseUrl && config.supabaseAnonKey);
+const loginDisabled = Boolean(config.disableLogin && config.ownerUserId);
 
 let state = createDefaultState();
 let session = loadLocalSession();
@@ -419,6 +420,16 @@ async function prepareSupabase() {
     supabaseReadyPromise = (async () => {
       const createClient = await withTimeout(loadSupabaseCreateClient(), 30000, "Supabaseライブラリの読み込みに時間がかかっています");
       supabaseClient = createClient(config.supabaseUrl, config.supabaseAnonKey);
+      if (loginDisabled) {
+        authUser = { id: config.ownerUserId };
+        session = { role: "teacher", mode: "public" };
+        sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
+        await loadCloudState();
+        subscribeToCloudChanges();
+        syncMessage = "クラウド保存中です";
+        render();
+        return supabaseClient;
+      }
       bindAuthListener();
       const authSession = await restoreAuthSessionFromUrl();
       authUser = authSession && authSession.user ? authSession.user : null;
@@ -706,7 +717,7 @@ function render() {
     return;
   }
 
-  if (!session) {
+  if (!session && !loginDisabled) {
     app.innerHTML = loginTemplate();
     bindLogin();
     return;
@@ -815,27 +826,7 @@ function teacherTemplate() {
           </label>
           <button class="btn secondary" type="submit">教室名を保存</button>
         </form>
-        <form class="panel password-settings" id="passwordForm">
-          <div>
-            <h2>ログインパスワード変更</h2>
-            <p class="subtle">現在のパスワードは安全のため表示できません。忘れた時はSupabaseから再設定できます。</p>
-          </div>
-          <label class="field">
-            <span>新しいパスワード</span>
-            <div class="password-field">
-              <input name="newPassword" type="password" autocomplete="new-password" minlength="6" />
-              <button class="password-toggle" type="button" data-toggle-password>表示</button>
-            </div>
-          </label>
-          <label class="field">
-            <span>確認</span>
-            <div class="password-field">
-              <input name="confirmPassword" type="password" autocomplete="new-password" minlength="6" />
-              <button class="password-toggle" type="button" data-toggle-password>表示</button>
-            </div>
-          </label>
-          <button class="btn secondary" type="submit">パスワードを変更</button>
-        </form>
+        ${loginDisabled ? "" : passwordSettingsTemplate()}
         <div class="stats">
           <div class="stat"><span class="subtle">レギュラー生徒数</span><strong>${regularMonthlyStudents.length}</strong></div>
           <div class="stat"><span class="subtle">レギュラー領収済み</span><strong>${regularPaid}</strong></div>
@@ -863,8 +854,34 @@ function teacherTemplate() {
       ${receiptModalTemplate()}
       ${courseModalTemplate()}
     `,
-    `<button class="btn secondary" id="logout">ログアウト</button>`,
+    loginDisabled ? "" : `<button class="btn secondary" id="logout">ログアウト</button>`,
   );
+}
+
+function passwordSettingsTemplate() {
+  return `
+    <form class="panel password-settings" id="passwordForm">
+      <div>
+        <h2>ログインパスワード変更</h2>
+        <p class="subtle">現在のパスワードは安全のため表示できません。忘れた時はSupabaseから再設定できます。</p>
+      </div>
+      <label class="field">
+        <span>新しいパスワード</span>
+        <div class="password-field">
+          <input name="newPassword" type="password" autocomplete="new-password" minlength="6" />
+          <button class="password-toggle" type="button" data-toggle-password>表示</button>
+        </div>
+      </label>
+      <label class="field">
+        <span>確認</span>
+        <div class="password-field">
+          <input name="confirmPassword" type="password" autocomplete="new-password" minlength="6" />
+          <button class="password-toggle" type="button" data-toggle-password>表示</button>
+        </div>
+      </label>
+      <button class="btn secondary" type="submit">パスワードを変更</button>
+    </form>
+  `;
 }
 
 function studentCardTemplate(student) {
@@ -1156,7 +1173,7 @@ function bindPasswordToggles() {
 }
 
 function bindTeacher() {
-  document.querySelector("#logout").addEventListener("click", logout);
+  document.querySelector("#logout")?.addEventListener("click", logout);
   bindPasswordToggles();
   document.querySelector("#search").addEventListener("input", (event) => {
     searchTerm = event.target.value;
@@ -1185,7 +1202,7 @@ function bindTeacher() {
     state.studioName = data.get("studioName").trim() || DEFAULT_STUDIO_NAME;
     await saveState("教室名を保存しました");
   });
-  document.querySelector("#passwordForm").addEventListener("submit", async (event) => {
+  document.querySelector("#passwordForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const newPassword = data.get("newPassword").trim();
